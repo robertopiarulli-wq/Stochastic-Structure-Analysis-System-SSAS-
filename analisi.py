@@ -100,29 +100,28 @@ for i in range(0, len(mappa), BATCH):
         .execute()
 print("  Mappa completata.")
 
-# ── STEP 4: Ricerca Sistematica ──────────────────────────
-print("\n[4/4] Ricerca sistematica quadruple vergini...")
+# ── STEP 4: Ricerca con Filtri a Cascata ─────────────────
+print("\n[4/4] Ricerca sistematica con filtri a cascata...")
 
 from moduli.generatore import (
-    carica_sottoinsiemi,
-    carica_figure_gap,
+    carica_storico,
+    carica_triple_attive,
     carica_mappa_occupazione,
     ricerca_sistematica
 )
 
-quadruple_viste, quintuple_viste, sestine_viste = \
-    carica_sottoinsiemi(supabase)
-figure_viste = carica_figure_gap(supabase)
-mappa_z      = carica_mappa_occupazione(supabase)
+storico_np, figure_viste = carica_storico(supabase)
+triple_attive            = carica_triple_attive(
+                               supabase, n_estrazioni=50)
+mappa_z                  = carica_mappa_occupazione(supabase)
 
 sestine = ricerca_sistematica(
-    quadruple_viste    = quadruple_viste,
-    quintuple_viste    = quintuple_viste,
-    sestine_viste      = sestine_viste,
-    figure_viste       = figure_viste,
-    mappa_z            = mappa_z,
-    max_quadruple_base = 500,
-    max_sestine        = 10000
+    storico_np   = storico_np,
+    figure_viste = figure_viste,
+    triple_attive= triple_attive,
+    mappa_z      = mappa_z,
+    n_campioni   = 5000000,
+    max_sestine  = 10000
 )
 
 run_id = int(time.time())
