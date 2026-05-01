@@ -32,34 +32,16 @@ if not URL or not KEY:
 
 supabase = create_client(URL, KEY)
 
-# ── Carica estrazioni (tutte, con paginazione) ───────────
+# ── Carica estrazioni (tutte) ────────────────────────────
 print("Caricamento estrazioni...")
 
-tutti_i_dati = []
-PAGE = 1000
-offset = 0
+res = supabase.table("estrazioni")\
+    .select("id, data_estrazione, n1, n2, n3, n4, n5, n6")\
+    .order("data_estrazione", desc=False)\
+    .limit(10000)\
+    .execute()
 
-while True:
-    res = supabase.table("estrazioni")\
-        .select("id, data_estrazione, n1, n2, n3, n4, n5, n6")\
-        .order("data_estrazione", desc=False)\
-        .limit(PAGE)\
-        .offset(offset)\
-        .execute()
-
-    batch = res.data
-    if not batch:
-        break
-
-    tutti_i_dati.extend(batch)
-    print(f"  Caricati {len(tutti_i_dati)} finora...")
-
-    if len(batch) < PAGE:
-        break
-
-    offset += PAGE
-
-df = pd.DataFrame(tutti_i_dati)
+df = pd.DataFrame(res.data)
 df['data_estrazione'] = pd.to_datetime(df['data_estrazione'])
 df = df.sort_values('data_estrazione').reset_index(drop=True)
 print(f"Caricate {len(df)} estrazioni totali.")
