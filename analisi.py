@@ -17,7 +17,7 @@ from moduli.mappa import calcola_mappa
 from moduli.generatore import (
     carica_quadruple_viste,
     carica_triple_attive,
-    genera_sestine
+    ricerca_sistematica
 )
 
 # ── Credenziali ──────────────────────────────────────────
@@ -99,17 +99,17 @@ for i in range(0, len(mappa), BATCH):
         .execute()
 print("  Mappa completata.")
 
-# ── STEP 4: Motore Generativo ────────────────────────────
-print("\n[4/4] Motore generativo quadruple vergini...")
+# ── STEP 4: Ricerca Sistematica ──────────────────────────
+print("\n[4/4] Ricerca sistematica quadruple vergini...")
 
 quadruple_viste = carica_quadruple_viste(supabase)
 triple_attive   = carica_triple_attive(supabase, n_estrazioni=13)
 
-sestine = genera_sestine(
-    quadruple_viste  = quadruple_viste,
-    triple_attive    = triple_attive,
-    n_quadruple_base = 5000,
-    max_sestine      = 10000
+sestine = ricerca_sistematica(
+    quadruple_viste    = quadruple_viste,
+    triple_attive      = triple_attive,
+    max_quadruple_base = 500,
+    max_sestine        = 10000
 )
 
 # Salva su Supabase con run_id univoco
