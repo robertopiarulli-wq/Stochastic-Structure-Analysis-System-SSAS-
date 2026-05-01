@@ -1,0 +1,12 @@
+# environment
+.env
+
+# python cache
+__pycache__/
+*.pyc
+
+# system
+.DS_Store
+
+# logs opzionali
+*.log
