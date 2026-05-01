@@ -1,34 +1,28 @@
-from core.ensemble import generate_structured_ensemble
-from analysis.frequency import frequency_analysis
-from analysis.cooccurrence import pair_analysis
-from analysis.stability import split_blocks, stability_index
+from engine.generator import genera_sestina
+from engine.metrics import rugosita
+from engine.filters import filtro
 
-def pipeline_v2(
-    n,
-    target_h,
-    target_delta,
-    h_last
-):
-    ensemble = generate_structured_ensemble(
-        n,
-        target_h,
-        target_delta,
-        h_last
-    )
-
-    # solo sestine
-    sestine = [x[0] for x in ensemble]
-
-    freq = frequency_analysis(sestine)
-    pairs = pair_analysis(sestine)
-
-    # blocchi
-    blocks = split_blocks(ensemble)
-    stability = stability_index(blocks)
-
-    return {
-        "ensemble": ensemble,
-        "freq": freq,
-        "pairs": pairs,
-        "stability": stability
-    }
+def run(n=500000, batch=50000, params={}):
+    
+    risultati = []
+    
+    for b in range(0, n, batch):
+        for _ in range(batch):
+            
+            s = genera_sestina()
+            h = rugosita(s)
+            
+            ok, score = filtro(
+                s,
+                h,
+                params["target_h"],
+                params["delta_target"],
+                params["h_prev"],
+                params["morsa"]
+            )
+            
+            if ok:
+                risultati.append((s, score, h))
+                
+    risultati.sort(key=lambda x: x[1])
+    return risultati
