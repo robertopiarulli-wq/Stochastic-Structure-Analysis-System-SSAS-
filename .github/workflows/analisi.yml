@@ -1,0 +1,32 @@
+name: SSAS - Analisi Strutturale
+
+on:
+  # Esecuzione manuale dal pannello GitHub
+  workflow_dispatch:
+  
+  # Schedulato: ogni lunedì e giovedì alle 10:00
+  # (dopo le estrazioni del martedì e giovedì)
+  schedule:
+    - cron: '0 10 * * 1,4'
+
+jobs:
+  analisi:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installa dipendenze
+        run: pip install -r requirements.txt
+
+      - name: Esegui analisi
+        env:
+          URL_SUPABASE: ${{ secrets.URL_SUPABASE }}
+          KEY_SUPABASE: ${{ secrets.KEY_SUPABASE }}
+        run: python analisi.py
