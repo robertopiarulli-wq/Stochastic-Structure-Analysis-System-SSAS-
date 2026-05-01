@@ -43,7 +43,8 @@ while True:
     res = supabase.table("estrazioni")\
         .select("id, data_estrazione, n1, n2, n3, n4, n5, n6")\
         .order("data_estrazione", desc=False)\
-        .range(offset, offset + PAGE - 1)\
+        .limit(PAGE)\
+        .offset(offset)\
         .execute()
 
     batch = res.data
@@ -51,11 +52,12 @@ while True:
         break
 
     tutti_i_dati.extend(batch)
-    offset += PAGE
     print(f"  Caricati {len(tutti_i_dati)} finora...")
 
     if len(batch) < PAGE:
         break
+
+    offset += PAGE
 
 df = pd.DataFrame(tutti_i_dati)
 df['data_estrazione'] = pd.to_datetime(df['data_estrazione'])
