@@ -21,6 +21,10 @@ from moduli.generatore import (
     ricerca_sistematica
 )
 
+# ── Credenziali ──────────────────────────────────────────
+URL = os.environ.get("URL_SUPABASE", "")
+KEY = os.environ.get("KEY_SUPABASE", "")
+
 if not URL or not KEY:
     try:
         with open(".env") as f:
@@ -99,13 +103,6 @@ print("  Mappa completata.")
 # ── STEP 4: Ricerca Sistematica 5 Filtri ─────────────────
 print("\n[4/4] Ricerca sistematica con 5 filtri...")
 
-from moduli.generatore import (
-    carica_triple_viste,
-    carica_figure_gap,
-    carica_mappa_occupazione,
-    ricerca_sistematica
-)
-
 triple_viste = carica_triple_viste(supabase)
 figure_viste = carica_figure_gap(supabase)
 mappa_z      = carica_mappa_occupazione(supabase)
@@ -118,7 +115,7 @@ sestine = ricerca_sistematica(
     max_sestine     = 10000
 )
 
-run_id  = int(time.time())
+run_id = int(time.time())
 print(f"\n  Salvataggio {len(sestine)} sestine (run_id={run_id})...")
 
 records = []
