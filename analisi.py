@@ -16,13 +16,10 @@ from moduli.costanti import calcola_costanti
 from moduli.mappa import calcola_mappa
 from moduli.generatore import (
     carica_triple_viste,
-    carica_triple_attive,
+    carica_figure_gap,
+    carica_mappa_occupazione,
     ricerca_sistematica
 )
-
-# ── Credenziali ──────────────────────────────────────────
-URL = os.environ.get("URL_SUPABASE", "")
-KEY = os.environ.get("KEY_SUPABASE", "")
 
 if not URL or not KEY:
     try:
