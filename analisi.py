@@ -99,27 +99,29 @@ for i in range(0, len(mappa), BATCH):
         .execute()
 print("  Mappa completata.")
 
-# ── STEP 4: Ricerca Sistematica su Triple Vergini ────────
-print("\n[4/4] Ricerca sistematica triple vergini...")
+# ── STEP 4: Ricerca Sistematica 5 Filtri ─────────────────
+print("\n[4/4] Ricerca sistematica con 5 filtri...")
 
 from moduli.generatore import (
     carica_triple_viste,
-    carica_triple_attive,
+    carica_figure_gap,
+    carica_mappa_occupazione,
     ricerca_sistematica
 )
 
-triple_viste  = carica_triple_viste(supabase)
-triple_attive = carica_triple_attive(supabase, n_estrazioni=13)
+triple_viste = carica_triple_viste(supabase)
+figure_viste = carica_figure_gap(supabase)
+mappa_z      = carica_mappa_occupazione(supabase)
 
 sestine = ricerca_sistematica(
-    triple_viste      = triple_viste,
-    triple_attive     = triple_attive,
-    max_triple_base   = 200,
-    max_sestine       = 10000
+    triple_viste    = triple_viste,
+    figure_viste    = figure_viste,
+    mappa_z         = mappa_z,
+    max_triple_base = 500,
+    max_sestine     = 10000
 )
 
-# Salva su Supabase con run_id univoco
-run_id = int(time.time())
+run_id  = int(time.time())
 print(f"\n  Salvataggio {len(sestine)} sestine (run_id={run_id})...")
 
 records = []
