@@ -7,7 +7,5 @@ def rugosita(s):
     return np.std(diffs) / mu if mu != 0 else 0
 
 
-def features(s):
-    return {
-        "H": rugosita(s)
-    }
+def delta_h(h, h_prev):
+    return h - h_prev
