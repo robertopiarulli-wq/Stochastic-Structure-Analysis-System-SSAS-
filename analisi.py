@@ -4,6 +4,7 @@ Popola le tabelle analitiche su Supabase.
 """
 import os
 import sys
+import time
 import pandas as pd
 import numpy as np
 
@@ -13,6 +14,11 @@ from supabase import create_client
 from moduli.fingerprint import build_fingerprint
 from moduli.costanti import calcola_costanti
 from moduli.mappa import calcola_mappa
+from moduli.generatore import (
+    carica_quadruple_viste,
+    carica_triple_attive,
+    genera_sestine
+)
 
 # ── Credenziali ──────────────────────────────────────────
 URL = os.environ.get("URL_SUPABASE", "")
@@ -47,7 +53,7 @@ df = df.sort_values('data_estrazione').reset_index(drop=True)
 print(f"Caricate {len(df)} estrazioni totali.")
 
 # ── STEP 1: Fingerprint ──────────────────────────────────
-print("\n[1/3] Calcolo fingerprint...")
+print("\n[1/4] Calcolo fingerprint...")
 fingerprints = []
 sets_storici = []
 
@@ -66,7 +72,7 @@ for i in range(0, len(fingerprints), BATCH):
 print(f"  Salvati {len(fingerprints)} fingerprint.")
 
 # ── STEP 2: Costanti ─────────────────────────────────────
-print("\n[2/3] Calcolo costanti sistema...")
+print("\n[2/4] Calcolo costanti sistema...")
 fp_df   = pd.DataFrame(fingerprints)
 records = calcola_costanti(fp_df)
 
@@ -83,7 +89,7 @@ supabase.table("costanti_sistema")\
 print("  Costanti salvate.")
 
 # ── STEP 3: Mappa occupazione ────────────────────────────
-print("\n[3/3] Calcolo mappa occupazione 1-90...")
+print("\n[3/4] Calcolo mappa occupazione 1-90...")
 mappa = calcola_mappa(df)
 
 BATCH = 30
@@ -93,5 +99,40 @@ for i in range(0, len(mappa), BATCH):
         .execute()
 print("  Mappa completata.")
 
+# ── STEP 4: Motore Generativo ────────────────────────────
+print("\n[4/4] Motore generativo quadruple vergini...")
+
+quadruple_viste = carica_quadruple_viste(supabase)
+triple_attive   = carica_triple_attive(supabase, n_estrazioni=13)
+
+sestine = genera_sestine(
+    quadruple_viste  = quadruple_viste,
+    triple_attive    = triple_attive,
+    n_quadruple_base = 5000,
+    max_sestine      = 10000
+)
+
+# Salva su Supabase con run_id univoco
+run_id = int(time.time())
+print(f"\n  Salvataggio {len(sestine)} sestine (run_id={run_id})...")
+
+records = []
+for s in sestine:
+    records.append({
+        "n1": s[0], "n2": s[1], "n3": s[2],
+        "n4": s[3], "n5": s[4], "n6": s[5],
+        "passa_gap":     True,
+        "passa_somma":   True,
+        "score_armonia": 1.0,
+        "run_id":        run_id
+    })
+
+BATCH = 200
+for i in range(0, len(records), BATCH):
+    supabase.table("combinazioni_candidate")\
+        .insert(records[i:i+BATCH])\
+        .execute()
+
+print(f"  Salvate {len(sestine)} sestine candidate.")
 print("\n=== ANALISI COMPLETATA ===")
 print("Supabase aggiornato. Lancia dashboard.py su Streamlit.")
