@@ -1,0 +1,17 @@
+# SSAS - Stochastic Structure Analysis System
+
+Sistema per analisi strutturale di processi combinatori casuali.
+
+## Obiettivo
+Estrarre:
+- stabilità numerica
+- co-occorrenze
+- strutture emergenti
+
+## Stack
+- Python
+- Streamlit
+- Supabase
+
+## Run
+streamlit run dashboard/streamlit_app.py
