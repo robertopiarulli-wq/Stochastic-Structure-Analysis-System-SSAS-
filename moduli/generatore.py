@@ -1,18 +1,18 @@
 """
-Motore generativo basato su quadruple vergini.
-Una sestina è valida solo se tutte le sue 15 quadruple
-interne non sono mai apparse storicamente.
+SSAS - Motore di Ricerca Sistematica
+Approccio deterministico: non genera sestine casuali
+ma mappa sistematicamente quali numeri possono
+estendere ogni quadrupla vergine mantenendo
+la purezza strutturale sull'intero database storico.
 """
-import random
 from itertools import combinations
-import numpy as np
 
 def carica_quadruple_viste(client):
     """
     Carica tutte le quadruple storiche in un set Python.
-    O(1) lookup per ogni verifica.
+    Lookup O(1) per ogni verifica.
     """
-    print("  Caricamento quadruple storiche...")
+    print("  Caricamento quadruple storiche (intero database)...")
     res = client.table("estrazioni")\
         .select("n1,n2,n3,n4,n5,n6")\
         .limit(10000)\
@@ -27,13 +27,13 @@ def carica_quadruple_viste(client):
         for q in combinations(numeri, 4):
             quadruple_viste.add(q)
 
-    print(f"  Quadruple storiche caricate: {len(quadruple_viste)}")
+    print(f"  Quadruple viste storicamente: {len(quadruple_viste)}")
     return quadruple_viste
 
 def carica_triple_attive(client, n_estrazioni=13):
     """
-    Carica le triple delle ultime N estrazioni.
-    Filtro secondario.
+    Triple delle ultime N estrazioni.
+    Filtro secondario sul breve periodo.
     """
     res = client.table("estrazioni")\
         .select("n1,n2,n3,n4,n5,n6")\
@@ -50,170 +50,178 @@ def carica_triple_attive(client, n_estrazioni=13):
         for t in combinations(numeri, 3):
             triple_attive.add(t)
 
-    print(f"  Triple attive (ultimi {n_estrazioni} concorsi): {len(triple_attive)}")
+    print(f"  Triple attive (ultimi {n_estrazioni} concorsi): "
+          f"{len(triple_attive)}")
     return triple_attive
 
-def sestina_e_vergine(sestina, quadruple_viste):
+def trova_quinte_valide(quadrupla, quadruple_viste):
     """
-    Verifica che tutte le 15 quadruple interne
-    alla sestina non siano mai apparse storicamente.
-    """
-    for q in combinations(sestina, 4):
-        if q in quadruple_viste:
-            return False
-    return True
-
-def sestina_passa_triple(sestina, triple_attive):
-    """
-    Verifica che nessuna tripla interna
-    sia nelle triple attive degli ultimi 30gg.
-    """
-    for t in combinations(sestina, 3):
-        if t in triple_attive:
-            return False
-    return True
-
-def estendi_con_quinto(quadrupla, quadruple_viste):
-    """
-    Dato [a,b,c,d] vergine, trova tutti i numeri e
-    tali che le 4 nuove quadruple formate siano anch'esse vergini.
+    Testa sistematicamente tutti i numeri 1-90
+    come 5° elemento della quadrupla.
+    
+    Un numero e è valido se tutte le 4 nuove quadruple
+    formate con i sottoinsiemi da 3 di [a,b,c,d]+e
+    non sono mai apparse nel database storico.
     
     Aggiungendo e a [a,b,c,d]:
-    → 4 nuove quadruple: C(4,3) combinazioni di [a,b,c,d] + e
+    le nuove quadruple sono C([a,b,c,d],3) + e = 4 quadruple
     """
-    candidati = []
     numeri_usati = set(quadrupla)
+    validi = []
 
     for e in range(1, 91):
         if e in numeri_usati:
             continue
-        # Le 4 nuove quadruple formate
-        valido = True
+
+        # Testa le 4 nuove quadruple formate
+        virgine = True
         for base in combinations(quadrupla, 3):
             nuova_q = tuple(sorted(base + (e,)))
             if nuova_q in quadruple_viste:
-                valido = False
+                virgine = False
                 break
-        if valido:
-            candidati.append(e)
 
-    return candidati
+        if virgine:
+            validi.append(e)
 
-def estendi_con_sesto(quintupla, quadruple_viste):
+    return validi
+
+def trova_seste_valide(quintupla, quadruple_viste):
     """
-    Dato [a,b,c,d,e] con tutte quadruple vergini,
-    trova tutti i numeri f tali che le 10 nuove
-    quadruple formate siano anch'esse vergini.
+    Testa sistematicamente tutti i numeri 1-90
+    come 6° elemento della quintupla.
+    
+    Un numero f è valido se tutte le 5 nuove quadruple
+    formate con i sottoinsiemi da 3 di [a,b,c,d,e]+f
+    non sono mai apparse nel database storico.
     
     Aggiungendo f a [a,b,c,d,e]:
-    → 10 nuove quadruple: C(5,3) combinazioni di [a,b,c,d,e] + f
+    le nuove quadruple sono C([a,b,c,d,e],3) + f = 10 quadruple
     """
-    candidati = []
     numeri_usati = set(quintupla)
+    validi = []
 
     for f in range(1, 91):
         if f in numeri_usati:
             continue
-        valido = True
+
+        # Testa le 10 nuove quadruple formate
+        virgine = True
         for base in combinations(quintupla, 3):
             nuova_q = tuple(sorted(base + (f,)))
             if nuova_q in quadruple_viste:
-                valido = False
+                virgine = False
                 break
-        if valido:
-            candidati.append(f)
 
-    return candidati
+        if virgine:
+            validi.append(f)
 
-def genera_sestine(
+    return validi
+
+def ricerca_sistematica(
     quadruple_viste,
     triple_attive,
-    n_quadruple_base=5000,
-    max_sestine=10000,
-    seed=None
+    max_quadruple_base=500,
+    max_sestine=10000
 ):
     """
-    Motore generativo principale.
+    Ricerca deterministica e sistematica.
     
-    1. Campiona quadruple vergini casuali come base
-    2. Estende con 5° numero (verificando virginity)
-    3. Estende con 6° numero (verificando virginity)
-    4. Applica filtro triple attive
-    5. Restituisce sestine candidate ordinate
+    1. Trova quadruple vergini iterando C(90,4)
+    2. Per ognuna testa sistematicamente 1-90 come 5°
+    3. Per ogni quintupla valida testa 1-90 come 6°
+    4. Applica filtro triple attive sulla sestina finale
+    
+    Non usa casualità — il risultato è riproducibile.
     """
-    if seed:
-        random.seed(seed)
+    print(f"\n  Ricerca sistematica quadruple vergini...")
 
-    print(f"\n  Generazione sestine da quadruple vergini...")
-    print(f"  Base: {n_quadruple_base} quadruple di partenza")
+    sestine_trovate     = []
+    quadruple_esaminate = 0
+    quadruple_vergini   = 0
+    scartate_triple     = 0
 
-    # Genera quadruple vergini casuali come punto di partenza
-    # Invece di iterare tutte le 2.4M, le campionam casualmente
-    quadruple_base = set()
-    tentativi = 0
-    max_tentativi = n_quadruple_base * 20
+    stats_quinte = []   # quanti 5° validi per quadrupla
+    stats_seste  = []   # quanti 6° validi per quintupla
 
-    while len(quadruple_base) < n_quadruple_base and tentativi < max_tentativi:
-        q = tuple(sorted(random.sample(range(1, 91), 4)))
-        if q not in quadruple_viste:
-            quadruple_base.add(q)
-        tentativi += 1
-
-    print(f"  Quadruple vergini trovate: {len(quadruple_base)} "
-          f"(su {tentativi} tentativi)")
-
-    sestine_trovate = []
-    scartate_triple = 0
-    senza_quinto = 0
-    senza_sesto = 0
-
-    for idx, quad in enumerate(quadruple_base):
+    # Itera C(90,4) = 2.555.190 quadruple in ordine
+    for quad in combinations(range(1, 91), 4):
         if len(sestine_trovate) >= max_sestine:
             break
 
-        # Step 1: trova candidati per il 5° numero
-        candidati_e = estendi_con_quinto(quad, quadruple_viste)
+        quadruple_esaminate += 1
 
-        if not candidati_e:
-            senza_quinto += 1
+        # La quadrupla deve essere vergine
+        if quad in quadruple_viste:
             continue
 
-        # Step 2: per ogni candidato e, trova il 6° numero
-        random.shuffle(candidati_e)
-        for e in candidati_e:
-            quintupla = tuple(sorted(quad + (e,)))
-            candidati_f = estendi_con_sesto(quintupla, quadruple_viste)
+        quadruple_vergini += 1
 
-            if not candidati_f:
-                senza_sesto += 1
-                continue
+        # STEP 2: testa sistematicamente tutti i 5°
+        quinte_valide = trova_quinte_valide(quad, quadruple_viste)
+        stats_quinte.append(len(quinte_valide))
 
-            # Step 3: costruisci sestine e applica filtro triple
-            random.shuffle(candidati_f)
-            for f in candidati_f:
-                sestina = tuple(sorted(quintupla + (f,)))
+        if not quinte_valide:
+            continue
 
-                # Filtro secondario: triple attive
-                if not sestina_passa_triple(sestina, triple_attive):
-                    scartate_triple += 1
-                    continue
-
-                sestine_trovate.append(list(sestina))
-
-                if len(sestine_trovate) >= max_sestine:
-                    break
-
+        # STEP 3: per ogni quintupla valida testa i 6°
+        for e in quinte_valide:
             if len(sestine_trovate) >= max_sestine:
                 break
 
-        if (idx + 1) % 500 == 0:
-            print(f"  Processate {idx+1}/{len(quadruple_base)} quadruple "
-                  f"→ {len(sestine_trovate)} sestine trovate...")
+            quintupla = tuple(sorted(quad + (e,)))
+            seste_valide = trova_seste_valide(quintupla, quadruple_viste)
+            stats_seste.append(len(seste_valide))
 
-    print(f"\n  Risultati generazione:")
-    print(f"  - Sestine generate:        {len(sestine_trovate)}")
-    print(f"  - Scartate (triple):       {scartate_triple}")
-    print(f"  - Quadruple senza 5°:      {senza_quinto}")
-    print(f"  - Quintuple senza 6°:      {senza_sesto}")
+            if not seste_valide:
+                continue
+
+            # STEP 4: costruisci sestine e applica filtro triple
+            for f in seste_valide:
+                if len(sestine_trovate) >= max_sestine:
+                    break
+
+                sestina = tuple(sorted(quintupla + (f,)))
+
+                # Filtro secondario: triple attive ultimi 13 concorsi
+                passa = True
+                for t in combinations(sestina, 3):
+                    if t in triple_attive:
+                        passa = False
+                        scartate_triple += 1
+                        break
+
+                if passa:
+                    sestine_trovate.append(list(sestina))
+
+        # Log ogni 1000 quadruple esaminate
+        if quadruple_esaminate % 1000 == 0:
+            print(f"  Esaminate {quadruple_esaminate:,} quadruple "
+                  f"| Vergini: {quadruple_vergini:,} "
+                  f"| Sestine: {len(sestine_trovate):,}")
+
+        # Ferma dopo max_quadruple_base vergini
+        # per non esaurire il timeout GitHub Actions
+        if quadruple_vergini >= max_quadruple_base:
+            break
+
+    # Statistiche finali
+    import numpy as np
+    print(f"\n  === Risultati Ricerca Sistematica ===")
+    print(f"  Quadruple esaminate:       {quadruple_esaminate:,}")
+    print(f"  Quadruple vergini trovate: {quadruple_vergini:,}")
+    print(f"  Sestine generate:          {len(sestine_trovate):,}")
+    print(f"  Scartate (triple attive):  {scartate_triple:,}")
+
+    if stats_quinte:
+        print(f"  5° validi per quadrupla:   "
+              f"media={np.mean(stats_quinte):.1f} "
+              f"min={min(stats_quinte)} "
+              f"max={max(stats_quinte)}")
+    if stats_seste:
+        print(f"  6° validi per quintupla:   "
+              f"media={np.mean(stats_seste):.1f} "
+              f"min={min(stats_seste)} "
+              f"max={max(stats_seste)}")
 
     return sestine_trovate
