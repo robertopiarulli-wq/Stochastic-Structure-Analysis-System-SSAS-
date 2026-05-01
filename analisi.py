@@ -15,7 +15,7 @@ from moduli.fingerprint import build_fingerprint
 from moduli.costanti import calcola_costanti
 from moduli.mappa import calcola_mappa
 from moduli.generatore import (
-    carica_quadruple_viste,
+    carica_triple_viste,
     carica_triple_attive,
     ricerca_sistematica
 )
