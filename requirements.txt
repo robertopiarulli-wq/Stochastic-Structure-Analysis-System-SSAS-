@@ -1,9 +1,0 @@
-streamlit
-numpy
-pandas
-supabase
-fastapi
-uvicorn
-networkx
-scipy
-python-dotenv
