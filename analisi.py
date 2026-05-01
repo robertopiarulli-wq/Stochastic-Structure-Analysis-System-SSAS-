@@ -15,8 +15,8 @@ from moduli.fingerprint import build_fingerprint
 from moduli.costanti import calcola_costanti
 from moduli.mappa import calcola_mappa
 from moduli.generatore import (
-    carica_sottoinsiemi,
-    carica_figure_gap,
+    carica_storico,
+    carica_triple_attive,
     carica_mappa_occupazione,
     ricerca_sistematica
 )
