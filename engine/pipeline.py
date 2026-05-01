@@ -1,16 +1,34 @@
-from engine.run_simulation import run_simulation
+from core.ensemble import generate_structured_ensemble
 from analysis.frequency import frequency_analysis
 from analysis.cooccurrence import pair_analysis
+from analysis.stability import split_blocks, stability_index
 
-def pipeline(n=100000):
-    ensemble = run_simulation(n)
+def pipeline_v2(
+    n,
+    target_h,
+    target_delta,
+    h_last
+):
+    ensemble = generate_structured_ensemble(
+        n,
+        target_h,
+        target_delta,
+        h_last
+    )
 
-    only_sestine = [x[0] for x in ensemble]
+    # solo sestine
+    sestine = [x[0] for x in ensemble]
 
-    freq = frequency_analysis(only_sestine)
-    pairs = pair_analysis(only_sestine)
+    freq = frequency_analysis(sestine)
+    pairs = pair_analysis(sestine)
+
+    # blocchi
+    blocks = split_blocks(ensemble)
+    stability = stability_index(blocks)
 
     return {
+        "ensemble": ensemble,
         "freq": freq,
-        "pairs": pairs
+        "pairs": pairs,
+        "stability": stability
     }
