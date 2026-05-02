@@ -10,7 +10,7 @@ PERIODO_BB  = 137
 PERIODO_RSI = 14
 PERIODO_ADX = 14
 N_CICLI_FOCUS = 3
-BIN_SIZE = 15  # Ampiezza fascia per istogramma somme
+BIN_SIZE = 40  # Ampiezza fascia per istogramma somme
 
 def build_ohlc(df):
     cols = ['n1','n2','n3','n4','n5','n6']
