@@ -91,85 +91,116 @@ def identifica_trend(serie_somme, window=10):
 
 def calcola_zone_saturazione(df_full, bin_size=BIN_SIZE):
     """
-    Identifica zone di saturazione e transizione
-    sull'intero database storico.
-    Marca le zone 'transizione_graal':
-    transizione compresa TRA due saturazioni.
-    Esclude zone estreme (vicino a 21 e 525).
+    Usa Kernel Density Estimation per trovare
+    i veri picchi e minimi nella distribuzione delle somme.
+    Zone di saturazione = picchi locali
+    Zone di transizione = minimi locali tra due picchi
+    Zone graal = minimi tra due picchi significativi
     """
-    somme = df_full['somma']
-    bins  = list(range(21, 526, bin_size))
-    freq, edges = np.histogram(somme, bins=bins)
+    from scipy.stats import gaussian_kde
 
+    somme = df_full['somma'].values
+    
+    # KDE su range 21-525
+    kde     = gaussian_kde(somme, bw_method=0.08)
+    x_vals  = np.linspace(21, 525, 1000)
+    density = kde(x_vals)
+
+    # Trova massimi locali (saturazioni)
+    from scipy.signal import find_peaks
+    peaks, props = find_peaks(
+        density,
+        height=np.percentile(density, 50),
+        distance=20
+    )
+
+    # Trova minimi locali (transizioni/sentieri)
+    valleys, _ = find_peaks(
+        -density,
+        distance=10
+    )
+
+    print(f"\n  [Wyckoff] KDE - Picchi (saturazioni): "
+          f"{len(peaks)}")
+    print(f"  [Wyckoff] KDE - Valli (transizioni):  "
+          f"{len(valleys)}")
+
+    # Costruisce zone
     zone = []
-    for i in range(len(freq)):
-        centro = (edges[i] + edges[i+1]) / 2
-        zone.append({
-            'fascia_min': int(edges[i]),
-            'fascia_max': int(edges[i+1]),
-            'centro':     centro,
-            'frequenza':  int(freq[i]),
-        })
 
-    df_zone = pd.DataFrame(zone)
-    freq_media = df_zone['frequenza'].mean()
-    freq_std   = df_zone['frequenza'].std()
+    # Saturazioni dai picchi
+    for p in peaks:
+        centro = x_vals[p]
+        # Ampiezza = metà distanza dai vicini
+        if p > 0 and p < len(x_vals)-1:
+            width = 20
+            zone.append({
+                'fascia_min': int(centro - width),
+                'fascia_max': int(centro + width),
+                'centro':     float(centro),
+                'frequenza':  int(density[p] * len(somme) * 10),
+                'tipo':       'saturazione',
+                'density':    float(density[p])
+            })
+            print(f"    🔴 Saturazione: {int(centro-width)}-"
+                  f"{int(centro+width)} "
+                  f"(centro={int(centro)})")
 
-    # Classifica fasce
-    def classifica(row):
-        if row['frequenza'] > freq_media + freq_std * 0.5:
-            return 'saturazione'
-        elif row['frequenza'] < freq_media - freq_std * 0.3:
-            return 'transizione'
-        return 'normale'
+    # Transizioni dalle valli
+    for v in valleys:
+        centro = x_vals[v]
+        # Verifica che ci siano picchi su entrambi i lati
+        peaks_left  = [p for p in peaks if x_vals[p] < centro]
+        peaks_right = [p for p in peaks if x_vals[p] > centro]
 
-    df_zone['tipo'] = df_zone.apply(classifica, axis=1)
-
-    # Marca transizioni graal: tra due saturazioni
-    # ed esclude zone estreme (prime 3 e ultime 3 fasce)
-    n = len(df_zone)
-    for i in range(3, n-3):
-        curr = df_zone.iloc[i]['tipo']
-        if curr != 'transizione':
+        if not peaks_left or not peaks_right:
             continue
 
-        # Cerca saturazione a sinistra
-        has_sat_left = False
-        for j in range(i-1, max(-1, i-4), -1):
-            if df_zone.iloc[j]['tipo'] == 'saturazione':
-                has_sat_left = True
-                break
+        # Intensità picchi vicini
+        best_left  = max(peaks_left,  key=lambda p: density[p])
+        best_right = min(peaks_right, key=lambda p: x_vals[p])
 
-        # Cerca saturazione a destra
-        has_sat_right = False
-        for j in range(i+1, min(n, i+4)):
-            if df_zone.iloc[j]['tipo'] == 'saturazione':
-                has_sat_right = True
-                break
+        d_left  = density[best_left]
+        d_right = density[best_right]
+        d_valle = density[v]
 
-        if has_sat_left and has_sat_right:
-            df_zone.at[i, 'tipo'] = 'transizione_graal'
+        # Scarto dalla media dei due picchi
+        d_media_picchi = (d_left + d_right) / 2
+        profondita     = (d_media_picchi - d_valle) / d_media_picchi
 
-    # Report
+        # Graal: valle profonda (>20%) tra due picchi significativi
+        is_graal = (profondita > 0.20 and
+                    d_left  > np.percentile(density, 40) and
+                    d_right > np.percentile(density, 40))
+
+        tipo = 'transizione_graal' if is_graal else 'transizione'
+        marker = '⭐' if is_graal else '〰️'
+
+        zone.append({
+            'fascia_min': int(centro - 15),
+            'fascia_max': int(centro + 15),
+            'centro':     float(centro),
+            'frequenza':  int(density[v] * len(somme) * 10),
+            'tipo':       tipo,
+            'density':    float(density[v]),
+            'profondita': float(profondita)
+        })
+        print(f"    {marker} {tipo}: {int(centro-15)}-"
+              f"{int(centro+15)} "
+              f"(profondità={profondita:.2%})")
+
+    df_zone = pd.DataFrame(zone).sort_values('centro')\
+                                .reset_index(drop=True)
+
     n_sat   = int((df_zone['tipo']=='saturazione').sum())
     n_trans = int((df_zone['tipo']=='transizione').sum())
     n_graal = int((df_zone['tipo']=='transizione_graal').sum())
-    print(f"  [Wyckoff] Zone saturazione:      {n_sat}")
-    print(f"  [Wyckoff] Zone transizione:      {n_trans}")
-    print(f"  [Wyckoff] Zone transizione graal:{n_graal}")
 
-    # Stampa mappa completa
-    print("\n  [Wyckoff] Mappa zone storiche:")
-    for _, r in df_zone.iterrows():
-        if r['tipo'] in ['saturazione','transizione_graal']:
-            marker = "🔴" if r['tipo']=='saturazione' else "⭐"
-            print(f"    {marker} {int(r['fascia_min']):3d}-"
-                  f"{int(r['fascia_max']):3d} "
-                  f"freq={int(r['frequenza']):4d} "
-                  f"[{r['tipo']}]")
+    print(f"\n  [Wyckoff] Zone saturazione:       {n_sat}")
+    print(f"  [Wyckoff] Zone transizione:       {n_trans}")
+    print(f"  [Wyckoff] Zone transizione graal: {n_graal}")
 
     return df_zone
-
 def determina_fascia_target(somma_attuale, df_zone, trend):
     """
     Data posizione attuale e trend,
