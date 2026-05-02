@@ -102,7 +102,7 @@ def calcola_zone_saturazione(df_full, bin_size=BIN_SIZE):
     somme = df_full['somma'].values
     
     # KDE su range 21-525
-    kde     = gaussian_kde(somme, bw_method=0.15)
+    kde     = gaussian_kde(somme, bw_method=0.10)
     x_vals  = np.linspace(21, 525, 1000)
     density = kde(x_vals)
 
@@ -111,7 +111,7 @@ def calcola_zone_saturazione(df_full, bin_size=BIN_SIZE):
     peaks, props = find_peaks(
         density,
         height=np.percentile(density, 50),
-        distance=40
+        distance=30
     )
 
     # Trova minimi locali (transizioni/sentieri)
