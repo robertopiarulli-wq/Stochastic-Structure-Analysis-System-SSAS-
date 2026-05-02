@@ -7,7 +7,10 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+import datetime
+import re
 from itertools import combinations
+from collections import Counter
 from supabase import create_client
 
 # ── Configurazione ────────────────────────────────────────
@@ -87,10 +90,7 @@ def carica_candidate(run_id):
 
 @st.cache_data(ttl=600)
 def carica_run_ids():
-    """
-    Restituisce solo i run che hanno frequenze calcolate
-    → garantisce che la tab Candidate mostri sempre dati
-    """
+    """Solo run con frequenze calcolate."""
     res = supabase.table("candidate_frequenze")\
         .select("run_id")\
         .execute()
@@ -120,9 +120,9 @@ def genera_sistema_ridotto(numeri, garanzia=5):
     if len(numeri) < 6:
         return [], 0
 
-    target_size  = garanzia
-    tutti_target = list(combinations(numeri, target_size))
-    target_set   = set(tutti_target)
+    target_size   = garanzia
+    tutti_target  = list(combinations(numeri, target_size))
+    target_set    = set(tutti_target)
     tutte_sestine = list(combinations(numeri, 6))
 
     copertura = {}
@@ -156,6 +156,29 @@ def genera_sistema_ridotto(numeri, garanzia=5):
     ) if tutte_sestine else 0
 
     return selezionate, efficienza
+
+def mostra_sistema(sistema, garanzia, key_prefix):
+    """Mostra dataframe sistema + download."""
+    righe = []
+    for i, s in enumerate(sistema):
+        righe.append({
+            "#":     i+1,
+            "N1": s[0], "N2": s[1], "N3": s[2],
+            "N4": s[3], "N5": s[4], "N6": s[5],
+            "Somma": sum(s),
+            "Range": s[-1] - s[0],
+        })
+    df_r = pd.DataFrame(righe)
+    st.dataframe(df_r, hide_index=True,
+                 use_container_width=True)
+    csv = df_r.to_csv(index=False)
+    st.download_button(
+        "⬇️ Scarica sistema (CSV)",
+        csv,
+        f"ridotto_{key_prefix}_g{garanzia}.csv",
+        "text/csv",
+        key=f"dl_{key_prefix}"
+    )
 
 # ── Header ────────────────────────────────────────────────
 st.title("🎯 SSAS — Stochastic Structure Analysis System")
@@ -305,7 +328,6 @@ with tab3:
         bb_u, bb_m, bb_l = calcola_bollinger(somme, 137)
         rsi              = calcola_rsi(somme, 14)
 
-        # Stato corrente
         if not df_wyk.empty:
             w = df_wyk.iloc[0]
             c1, c2, c3, c4, c5 = st.columns(5)
@@ -322,7 +344,6 @@ with tab3:
             )
 
         st.divider()
-
         tail    = 500
         df_plot = df_est.tail(tail).copy()
         bb_u_p  = bb_u.tail(tail)
@@ -354,10 +375,10 @@ with tab3:
         if not df_wyk.empty:
             fig.add_hline(y=w['fascia_min'],
                           line_color="gold", line_dash="dash",
-                          annotation_text=f"Target min")
+                          annotation_text="Target min")
             fig.add_hline(y=w['fascia_max'],
                           line_color="gold", line_dash="dash",
-                          annotation_text=f"Target max")
+                          annotation_text="Target max")
         fig.update_layout(
             template="plotly_dark", height=350,
             margin=dict(l=20,r=20,t=20,b=20),
@@ -406,20 +427,19 @@ with tab3:
 with tab4:
     st.subheader("🎯 Sestine Candidate Wyckoff")
     st.caption(
-        "Per ogni run vengono mostrati: i numeri più presenti "
-        "nelle 5000 sestine candidate (firma del sistema) "
-        "e la lista completa scaricabile."
+        "I numeri ALTA saturazione sono il pool Wyckoff. "
+        "I numeri BASSA sono il 6° calcolato per chiudere "
+        "la somma target."
     )
 
     run_ids = carica_run_ids()
 
     if not run_ids:
         st.warning(
-            "Nessun run con frequenze disponibile. "
+            "Nessun run disponibile. "
             "Esegui analisi.py su GitHub Actions."
         )
     else:
-        import datetime
         run_labels = {
             r: datetime.datetime.fromtimestamp(r)\
                .strftime("%d/%m/%Y %H:%M:%S")
@@ -436,7 +456,7 @@ with tab4:
 
         if df_freq.empty:
             st.warning(
-                "Frequenze non disponibili per questo run. "
+                "Frequenze non disponibili. "
                 "Seleziona un run più recente."
             )
         else:
@@ -445,25 +465,15 @@ with tab4:
                 f"Run del {run_labels[run_sel]}"
             )
 
-            # ── Grafico frequenze numeri ──────────────────
             st.subheader(
                 "Frequenza numeri nelle sestine candidate"
             )
-            st.caption(
-                "Mostra quanto spesso ogni numero (1-90) "
-                "appare nelle sestine candidate. "
-                "I numeri ALTI sono quelli selezionati dal "
-                "pool Wyckoff. I numeri BASSI sono il 6° "
-                "calcolato per chiudere la somma target."
-            )
-
             df_freq_sorted = df_freq.sort_values('numero')
             col_colors = df_freq_sorted['pct'].apply(
                 lambda p: '#ff4444' if p >= 15
                 else '#ffaa00' if p >= 8
                 else '#44ff44'
             )
-
             fig = go.Figure(go.Bar(
                 x=df_freq_sorted['numero'],
                 y=df_freq_sorted['pct'],
@@ -479,27 +489,23 @@ with tab4:
                 template="plotly_dark", height=320,
                 margin=dict(l=20,r=20,t=20,b=20),
                 xaxis_title="Numero",
-                yaxis_title="% presenze nelle candidate",
+                yaxis_title="% presenze",
                 xaxis=dict(dtick=5)
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # ── Colonne per saturazione ───────────────────
             st.subheader("Numeri per livello di saturazione")
             c1, c2, c3 = st.columns(3)
 
-            alta = df_freq[df_freq['pct'] >= 15]\
+            alta  = df_freq[df_freq['pct'] >= 15]\
                 .sort_values('pct', ascending=False)
             media = df_freq[
                 (df_freq['pct'] >= 8) &
                 (df_freq['pct'] < 15)
             ].sort_values('pct', ascending=False)
-            bassa = df_freq[df_freq['pct'] < 8]\
-                .sort_values('pct', ascending=False)\
-                .head(15)
 
             with c1:
-                st.write("🔴 **ALTA saturazione** (≥15%)")
+                st.write("🔴 **ALTA** (≥15%)")
                 st.caption("Pool Wyckoff dominante")
                 for _, r in alta.iterrows():
                     st.write(
@@ -507,7 +513,7 @@ with tab4:
                         f"{r['pct']:.1f}%"
                     )
             with c2:
-                st.write("🟡 **MEDIA saturazione** (8-15%)")
+                st.write("🟡 **MEDIA** (8-15%)")
                 for _, r in media.iterrows():
                     st.write(
                         f"**N.{int(r['numero']):2d}** → "
@@ -515,33 +521,28 @@ with tab4:
                     )
             with c3:
                 st.write("🟢 **Pool Wyckoff attivo**")
-                df_wyk_s = carica_wyckoff_stato()
-                if not df_wyk_s.empty:
+                df_wyk_t = carica_wyckoff_stato()
+                if not df_wyk_t.empty:
                     pool_df = carica_pool(
-                        int(df_wyk_s.iloc[0]['id'])
+                        int(df_wyk_t.iloc[0]['id'])
                     )
                     if not pool_df.empty:
                         nums = sorted(
                             pool_df['numero'].tolist()
                         )
-                        # Mostra a gruppi di 5
                         for i in range(0, len(nums), 5):
-                            st.write(
-                                " ".join(
-                                    f"**{n}**"
-                                    for n in nums[i:i+5]
-                                )
-                            )
+                            st.write(" ".join(
+                                f"**{n}**"
+                                for n in nums[i:i+5]
+                            ))
 
             st.divider()
-
-            # ── Lista sestine ─────────────────────────────
             st.subheader(
                 f"Sestine candidate (prime 50 su "
                 f"{len(df_cand):,})"
             )
             if not df_cand.empty:
-                cols_n = ['n1','n2','n3','n4','n5','n6']
+                cols_n  = ['n1','n2','n3','n4','n5','n6']
                 df_show = df_cand.head(50)[cols_n].copy()
                 df_show.columns = ['N1','N2','N3',
                                    'N4','N5','N6']
@@ -563,41 +564,209 @@ with tab4:
                 )
 
 # ════════════════════════════════════════════════════════
-# TAB 5 — OFFICINA (SISTEMA RIDOTTO)
+# TAB 5 — OFFICINA
 # ════════════════════════════════════════════════════════
 with tab5:
     st.subheader("🔧 Officina — Sistema Ridotto")
+
+    df_wyk_off  = carica_wyckoff_stato()
+    run_ids_off = carica_run_ids()
+
+    # Recupera target Wyckoff corrente
+    fmin = fmax = None
+    if not df_wyk_off.empty:
+        w_off = df_wyk_off.iloc[0]
+        fmin  = int(w_off['fascia_min'])
+        fmax  = int(w_off['fascia_max'])
+
+    # ── SEZIONE A: AUTOMATICA ────────────────────────────
+    st.markdown("### 🤖 Selezione Automatica da Candidate")
     st.caption(
-        "Inserisci i tuoi numeri e genera un sistema ridotto "
-        "con garanzia 4 o 5. "
-        "Garanzia 5 = se i 6 vincenti sono tutti nei tuoi numeri, "
-        "almeno una schedina ha 5 giusti."
+        "Preleva i numeri più presenti nelle candidate "
+        "con somma nel target Wyckoff e genera il ridotto."
+    )
+
+    if df_wyk_off.empty or not run_ids_off:
+        st.warning(
+            "Dati Wyckoff o candidate non disponibili. "
+            "Esegui analisi.py."
+        )
+    else:
+        st.info(
+            f"🎯 Target Wyckoff: **{fmin}-{fmax}** | "
+            f"Trend: **{w_off['trend'].upper()}** | "
+            f"Zona: **{w_off['zona_tipo']}**"
+        )
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            run_labels_off = {
+                r: datetime.datetime.fromtimestamp(r)\
+                   .strftime("%d/%m/%Y %H:%M")
+                for r in run_ids_off
+            }
+            run_auto = st.selectbox(
+                "Run candidate:",
+                options=run_ids_off,
+                format_func=lambda x: run_labels_off[x],
+                key="run_auto"
+            )
+        with c2:
+            n_numeri_auto = st.slider(
+                "Quanti numeri estrarre:",
+                min_value=6, max_value=20,
+                value=12, key="n_auto"
+            )
+        with c3:
+            garanzia_auto = st.radio(
+                "Garanzia:", options=[4, 5],
+                index=1, horizontal=True,
+                key="gar_auto"
+            )
+
+        if st.button("🎯 Genera Sistema Automatico",
+                     type="primary", key="btn_auto"):
+
+            df_cand_auto = carica_candidate(run_auto)
+
+            if df_cand_auto.empty:
+                st.error("Nessuna candidata nel run.")
+            else:
+                cols_n = ['n1','n2','n3','n4','n5','n6']
+                df_cand_auto['somma'] = \
+                    df_cand_auto[cols_n].sum(axis=1)
+
+                df_in_target = df_cand_auto[
+                    (df_cand_auto['somma'] >= fmin) &
+                    (df_cand_auto['somma'] <= fmax)
+                ]
+
+                st.write(
+                    f"Candidate nel target {fmin}-{fmax}: "
+                    f"**{len(df_in_target):,}** su "
+                    f"**{len(df_cand_auto):,}**"
+                )
+
+                if df_in_target.empty:
+                    st.error(
+                        f"Nessuna candidata nel target "
+                        f"{fmin}-{fmax}. "
+                        "Rilancia analisi.py."
+                    )
+                else:
+                    tutti = []
+                    for col in cols_n:
+                        tutti.extend(
+                            df_in_target[col].tolist()
+                        )
+                    freq = Counter(tutti)
+                    top_numeri = sorted([
+                        n for n, _ in
+                        freq.most_common(n_numeri_auto)
+                    ])
+
+                    st.success(
+                        f"Top **{n_numeri_auto}** numeri "
+                        f"estratti dal target:"
+                    )
+                    st.write(f"**{top_numeri}**")
+
+                    s_min_a = sum(sorted(top_numeri)[:6])
+                    s_max_a = sum(sorted(top_numeri)[-6:])
+                    st.caption(
+                        f"Somma min: **{s_min_a}** | "
+                        f"Somma max: **{s_max_a}** | "
+                        f"Target: **{fmin}-{fmax}**"
+                    )
+
+                    if s_max_a < fmin or s_min_a > fmax:
+                        st.error(
+                            "I numeri non raggiungono il "
+                            "target. Aumenta il numero "
+                            "da estrarre."
+                        )
+                    else:
+                        n_full_a = len(
+                            list(combinations(top_numeri, 6))
+                        )
+                        st.info(
+                            f"Integrale: **{n_full_a:,}** "
+                            f"sestine | "
+                            f"Garanzia **{garanzia_auto}**"
+                        )
+
+                        with st.spinner(
+                            "Calcolo sistema ridotto..."
+                        ):
+                            sistema_a, efficienza_a = \
+                                genera_sistema_ridotto(
+                                    top_numeri,
+                                    garanzia_auto
+                                )
+
+                        sis_target_a = [
+                            s for s in sistema_a
+                            if fmin <= sum(s) <= fmax
+                        ]
+
+                        st.success(
+                            f"Ridotto totale: "
+                            f"**{len(sistema_a)}** sestine | "
+                            f"Nel target: "
+                            f"**{len(sis_target_a)}** | "
+                            f"Riduzione **{efficienza_a}%**"
+                        )
+
+                        if sis_target_a:
+                            st.subheader(
+                                f"{len(sis_target_a)} "
+                                f"sestine nel target "
+                                f"{fmin}-{fmax}"
+                            )
+                            mostra_sistema(
+                                sis_target_a,
+                                garanzia_auto, "auto"
+                            )
+                        else:
+                            st.warning(
+                                "Nessuna sestina nel target. "
+                                "Prova con più numeri "
+                                "o garanzia 4."
+                            )
+
+    st.divider()
+
+    # ── SEZIONE B: MANUALE ───────────────────────────────
+    st.markdown("### ✏️ Selezione Manuale")
+    st.caption(
+        "Inserisci i tuoi numeri e genera il sistema ridotto."
     )
 
     c1, c2 = st.columns([3, 1])
     with c1:
         numeri_input = st.text_input(
-            "Inserisci i numeri (separati da virgola o spazio):",
+            "Numeri (separati da virgola o spazio):",
             placeholder="Es: 7 15 22 35 48 63 71 82"
         )
     with c2:
-        garanzia = st.radio(
-            "Garanzia:",
-            options=[4, 5],
-            index=1,
-            horizontal=True
+        garanzia_man = st.radio(
+            "Garanzia:", options=[4, 5],
+            index=1, horizontal=True,
+            key="gar_man"
         )
 
-    applica_filtri = st.checkbox(
-        "Applica filtri strutturali (overlap, spacing, ecc.)",
+    filtra_target = st.checkbox(
+        "Mostra solo sestine nel target Wyckoff",
         value=True
     )
 
-    if st.button("🚀 Genera Sistema Ridotto", type="primary"):
-        import re
+    if st.button("🚀 Genera Sistema Manuale",
+                 type="primary", key="btn_man"):
+
         nums_raw = re.findall(r'\d+', numeri_input)
         numeri   = sorted(set(
-            int(n) for n in nums_raw if 1 <= int(n) <= 90
+            int(n) for n in nums_raw
+            if 1 <= int(n) <= 90
         ))
 
         if len(numeri) < 6:
@@ -605,115 +774,85 @@ with tab5:
         elif len(numeri) > 20:
             st.error("Massimo 20 numeri per volta.")
         else:
-            n_int  = len(numeri)
-            n_full = len(list(combinations(numeri, 6)))
+            # Avviso compatibilità target
+            if fmin and fmax:
+                s_min_m = sum(sorted(numeri)[:6])
+                s_max_m = sum(sorted(numeri)[-6:])
+                if filtra_target and (
+                    s_max_m < fmin or s_min_m > fmax
+                ):
+                    st.warning(
+                        f"⚠️ Somme possibili {s_min_m}-"
+                        f"{s_max_m} fuori dal target "
+                        f"{fmin}-{fmax}."
+                    )
+
+            n_full_m = len(list(combinations(numeri, 6)))
             st.info(
-                f"**{n_int} numeri** → "
-                f"Sistema integrale: **{n_full:,}** sestine | "
-                f"Garanzia **{garanzia}** selezionata"
+                f"**{len(numeri)} numeri** → "
+                f"Integrale: **{n_full_m:,}** sestine | "
+                f"Garanzia **{garanzia_man}**"
             )
 
             with st.spinner("Calcolo sistema ridotto..."):
-                sistema, efficienza = genera_sistema_ridotto(
-                    numeri, garanzia
-                )
-
-            if not sistema:
-                st.error("Impossibile generare il sistema.")
-            else:
-                st.success(
-                    f"Sistema ridotto: **{len(sistema)}** "
-                    f"sestine (riduzione **{efficienza}%** "
-                    f"rispetto al pieno)"
-                )
-
-                if applica_filtri:
-                    with st.spinner("Applicazione filtri..."):
-                        res_st = supabase.table("estrazioni")\
-                            .select("n1,n2,n3,n4,n5,n6")\
-                            .limit(10000)\
-                            .execute()
-                        storico = np.array([
-                            sorted([r['n1'],r['n2'],r['n3'],
-                                    r['n4'],r['n5'],r['n6']])
-                            for r in res_st.data
-                        ])
-                        mappa_z = {
-                            r['numero']: r['z_score'] or 0.0
-                            for r in supabase.table(
-                                "mappa_occupazione"
-                            ).select("numero,z_score")\
-                             .execute().data
-                        }
-
-                        filtrate = []
-                        scarti   = 0
-                        for s in sistema:
-                            s_arr    = np.array(list(s))
-                            overlaps = np.sum(
-                                np.isin(storico, s_arr),
-                                axis=1
-                            )
-                            if int(overlaps.max()) >= 4:
-                                scarti += 1
-                                continue
-                            filtrate.append(s)
-
-                    sistema = filtrate
-                    st.info(
-                        f"Dopo filtri: **{len(sistema)}** "
-                        f"sestine ({scarti} scartate)"
+                sistema_m, efficienza_m = \
+                    genera_sistema_ridotto(
+                        numeri, garanzia_man
                     )
 
-                st.subheader(
-                    f"Le {len(sistema)} sestine del sistema"
+            if not sistema_m:
+                st.error("Impossibile generare il sistema.")
+            else:
+                if filtra_target and fmin and fmax:
+                    sis_show   = [
+                        s for s in sistema_m
+                        if fmin <= sum(s) <= fmax
+                    ]
+                    label_filt = f"nel target {fmin}-{fmax}"
+                else:
+                    sis_show   = sistema_m
+                    label_filt = "totali"
+
+                st.success(
+                    f"Ridotto: **{len(sistema_m)}** totali | "
+                    f"**{len(sis_show)}** {label_filt} | "
+                    f"Riduzione **{efficienza_m}%**"
                 )
-                righe = []
-                for i, s in enumerate(sistema):
-                    righe.append({
-                        "#":     i+1,
-                        "N1": s[0], "N2": s[1], "N3": s[2],
-                        "N4": s[3], "N5": s[4], "N6": s[5],
-                        "Somma": sum(s),
-                        "Range": s[-1] - s[0],
-                    })
 
-                df_sis = pd.DataFrame(righe)
-                st.dataframe(df_sis,
-                             hide_index=True,
-                             use_container_width=True)
+                if sis_show:
+                    st.subheader(
+                        f"{len(sis_show)} sestine "
+                        f"{label_filt}"
+                    )
+                    mostra_sistema(
+                        sis_show, garanzia_man, "man"
+                    )
+                else:
+                    st.warning(
+                        "Nessuna sestina nel target. "
+                        "Deseleziona filtro o cambia numeri."
+                    )
 
-                from collections import Counter
-                tutti    = [n for s in sistema for n in s]
-                freq_cnt = Counter(tutti)
-                freq_df  = pd.DataFrame([
-                    {'numero':   k,
-                     'presenze': v,
-                     'pct':      round(v*100/len(sistema), 1)}
-                    for k, v in sorted(freq_cnt.items())
+                # Grafico copertura
+                tutti_m  = [n for s in sistema_m for n in s]
+                freq_m   = Counter(tutti_m)
+                freq_df_m = pd.DataFrame([
+                    {'numero': k, 'presenze': v,
+                     'pct': round(v*100/len(sistema_m), 1)}
+                    for k, v in sorted(freq_m.items())
                 ])
-
-                st.subheader("Copertura numeri nel sistema")
-                fig_off = px.bar(
-                    freq_df, x='numero', y='pct',
+                fig_man = px.bar(
+                    freq_df_m, x='numero', y='pct',
                     color='pct',
                     color_continuous_scale='RdYlGn',
-                    title="% presenze per numero"
+                    title="Copertura numeri nel sistema"
                 )
-                fig_off.update_layout(
-                    template="plotly_dark", height=280,
+                fig_man.update_layout(
+                    template="plotly_dark", height=250,
                     margin=dict(l=20,r=20,t=40,b=20)
                 )
-                st.plotly_chart(fig_off,
+                st.plotly_chart(fig_man,
                                 use_container_width=True)
-
-                csv_sis = df_sis.to_csv(index=False)
-                st.download_button(
-                    "⬇️ Scarica sistema (CSV)",
-                    csv_sis,
-                    f"sistema_ridotto_g{garanzia}.csv",
-                    "text/csv"
-                )
 
 # ════════════════════════════════════════════════════════
 # TAB 6 — ULTIME ESTRAZIONI
@@ -730,7 +869,7 @@ with tab6:
     df_ult = pd.DataFrame(res.data)
 
     if not df_ult.empty:
-        cols_n       = ['n1','n2','n3','n4','n5','n6']
+        cols_n = ['n1','n2','n3','n4','n5','n6']
         df_ult['somma'] = df_ult[cols_n].sum(axis=1)
         df_ult['range'] = df_ult['n6'] - df_ult['n1']
 
