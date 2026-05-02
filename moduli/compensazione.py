@@ -1,188 +1,145 @@
 """
 SSAS - Motore 2: Compensazione Numerica
 Data la fascia target da Wyckoff,
-identifica quali numeri sono sottorappresentati
-in quella zona negli ultimi N cicli.
-Restituisce il pool per il Motore 3.
+identifica i numeri sottorappresentati in quella zona
+negli ultimi N cicli rispetto allo storico completo.
+Il pool copre tutto il tabellone 1-90:
+una sestina con somma 260 può avere numeri ovunque.
 """
 import numpy as np
 import pandas as pd
 
 N_CICLI_FOCUS = 3
+POOL_SIZE     = 30
 
-def estrai_estrazioni_in_fascia(df_full, fascia_min, fascia_max):
+def estrai_estrazioni_in_fascia(df, fascia_min, fascia_max):
+    """Estrazioni storiche con somma nella fascia target."""
+    cols  = ['n1','n2','n3','n4','n5','n6']
+    if 'somma' not in df.columns:
+        df = df.copy()
+        df['somma'] = df[cols].sum(axis=1)
+    mask = ((df['somma'] >= fascia_min) &
+            (df['somma'] <= fascia_max))
+    return df[mask].copy()
+
+def calcola_frequenze_numeri(df_full, df_fascia,
+                              df_cicli, fascia_min, fascia_max):
     """
-    Restituisce tutte le estrazioni storiche
-    la cui somma cade nella fascia target.
+    Per ogni numero 1-90:
+    - freq_storica: apparizioni nella fascia su tutto il db
+    - freq_recente: apparizioni nella fascia negli ultimi N cicli
+    - delta: freq_recente - freq_storica
+      negativo = sottorappresentato recentemente = candidato pool
     """
-    mask = (df_full['somma'] >= fascia_min) & \
-           (df_full['somma'] <= fascia_max)
-    return df_full[mask].copy()
+    cols  = ['n1','n2','n3','n4','n5','n6']
+    n_tot = len(df_fascia)
 
-def calcola_frequenze_numeri(df_fascia, df_cicli_focus):
-    """
-    Per ogni numero 1-90, calcola:
-    - freq_globale: quanto appare nella fascia su tutto lo storico
-    - freq_recente: quanto appare negli ultimi N cicli nella fascia
-    - delta: sottorappresentazione recente vs storico
-    """
-    cols = ['n1','n2','n3','n4','n5','n6']
-    risultati = []
-    n_tot     = len(df_fascia)
-
-    # Estrazioni nella fascia negli ultimi cicli
-    if not df_cicli_focus.empty and n_tot > 0:
-        idx_min = int(df_cicli_focus['start_idx'].min())
-        df_recente_fascia = df_fascia[
-            df_fascia.index >= idx_min
-        ]
-    else:
-        df_recente_fascia = df_fascia.tail(137*N_CICLI_FOCUS)
-
-    n_rec = len(df_recente_fascia)
-
-    for numero in range(1, 91):
-        # Frequenza globale nella fascia
-        freq_glob = int(
-            df_fascia[cols].apply(
-                lambda r: numero in r.values, axis=1
-            ).sum()
+    # Ultimi N cicli da 137
+    if not df_cicli.empty:
+        idx_min = int(df_cicli['start_idx'].min())
+        df_rec  = df_full[df_full.index >= idx_min].copy()
+        if 'somma' not in df_rec.columns:
+            df_rec['somma'] = df_rec[cols].sum(axis=1)
+        df_rec_fascia = estrai_estrazioni_in_fascia(
+            df_rec, fascia_min, fascia_max
         )
-        pct_glob = freq_glob / n_tot if n_tot > 0 else 0
+    else:
+        df_rec_fascia = df_fascia.tail(137 * N_CICLI_FOCUS)
 
-        # Frequenza recente nella fascia
-        freq_rec = int(
-            df_recente_fascia[cols].apply(
-                lambda r: numero in r.values, axis=1
-            ).sum()
-        ) if n_rec > 0 else 0
-        pct_rec = freq_rec / n_rec if n_rec > 0 else 0
+    n_rec = len(df_rec_fascia)
 
-        # Frequenza attesa teorica
-        freq_att = 6.0 / 90.0
+    print(f"  [Compensazione] Estrazioni in fascia (storico): "
+          f"{n_tot}")
+    print(f"  [Compensazione] Estrazioni in fascia (recenti): "
+          f"{n_rec}")
 
-        # Delta: negativo = sottorappresentato (candidato compensazione)
-        delta = pct_rec - pct_glob
+    # Matrice numpy per velocità
+    arr_tot = df_fascia[cols].values     if n_tot > 0 else None
+    arr_rec = df_rec_fascia[cols].values if n_rec > 0 else None
+
+    risultati = []
+    for numero in range(1, 91):
+        freq_s = float(np.sum(arr_tot == numero)) / n_tot \
+                 if n_tot > 0 else 0.0
+        freq_r = float(np.sum(arr_rec == numero)) / n_rec \
+                 if n_rec > 0 else 0.0
+        delta  = freq_r - freq_s
 
         risultati.append({
-            'numero':      numero,
-            'freq_globale': round(pct_glob, 6),
-            'freq_recente': round(pct_rec, 6),
-            'freq_attesa':  round(freq_att, 6),
+            'numero':       numero,
+            'freq_storica': round(freq_s, 6),
+            'freq_recente': round(freq_r, 6),
+            'freq_attesa':  round(6.0/90.0, 6),
             'delta':        round(delta, 6),
-            'n_fascia_tot': n_tot,
-            'n_fascia_rec': n_rec,
         })
 
     return pd.DataFrame(risultati)
 
-def seleziona_pool(df_freq, fascia_min, fascia_max,
-                   n_numeri=30, delta_soglia=0.0):
+def seleziona_pool(df_freq, n_numeri=POOL_SIZE):
     """
-    Seleziona il pool di numeri per il Motore 3.
-
-    Logica:
-    - Priorità ai numeri con delta negativo
-      (sottorappresentati nella zona recente)
-    - Filtro per compatibilità con la fascia somma:
-      esclude numeri troppo alti se la fascia è bassa
-      e viceversa
-    - Restituisce i top N numeri
+    Seleziona i numeri più sottorappresentati nella zona
+    negli ultimi cicli rispetto allo storico.
+    Delta negativo = mancano all'appello = candidati.
+    Tutto il tabellone 1-90 è candidabile.
     """
-    df = df_freq.copy()
-
-    # Stima range valori compatibili con la fascia
-    # Per formare una sestina con somma in [fascia_min, fascia_max]
-    # i numeri devono essere approssimativamente
-    # in [fascia_min/6 - margine, fascia_max/6 + margine]
-    centro_fascia = (fascia_min + fascia_max) / 2
-    margine       = (fascia_max - fascia_min) * 2
-
-    num_min = max(1,  int(fascia_min/6 - margine/6))
-    num_max = min(90, int(fascia_max/6 + margine/6))
-
-    print(f"  [Compensazione] Range numeri compatibili: "
-          f"{num_min}-{num_max}")
-
-    # Filtro compatibilità
-    df = df[
-        (df['numero'] >= num_min) &
-        (df['numero'] <= num_max)
-    ].copy()
-
-    # Ordina per delta crescente
-    # (più negativo = più sottorappresentato = priorità alta)
-    df = df.sort_values('delta', ascending=True)
-
-    # Prendi i top N
-    pool = df.head(n_numeri)
-
-    return pool
+    df = df_freq.sort_values('delta', ascending=True)
+    return df.head(n_numeri)
 
 def esegui_compensazione(df_raw, wyckoff_id, stato,
-                         df_zone, df_cicli, client):
-    """
-    Pipeline completa Motore 2.
-    Salva pool in pool_compensazione su Supabase.
-    Restituisce lista numeri del pool.
-    """
+                          df_zone, df_cicli, client):
     fascia_min = stato['fascia_min']
     fascia_max = stato['fascia_max']
 
     print(f"\n  [Compensazione] Fascia target: "
           f"{fascia_min}-{fascia_max}")
 
-    # Calcola somma se non presente
     cols = ['n1','n2','n3','n4','n5','n6']
     df   = df_raw.copy()
     if 'somma' not in df.columns:
         df['somma'] = df[cols].sum(axis=1)
 
-    # Estrazioni nella fascia
-    df_fascia = estrai_estrazioni_in_fascia(df, fascia_min, fascia_max)
-    print(f"  [Compensazione] Estrazioni storiche in fascia: "
-          f"{len(df_fascia)}")
+    df_fascia = estrai_estrazioni_in_fascia(
+        df, fascia_min, fascia_max
+    )
 
-    if df_fascia.empty:
-        print("  [Compensazione] ATTENZIONE: fascia vuota, "
-              "uso fascia allargata")
-        margine    = 30
-        df_fascia  = estrai_estrazioni_in_fascia(
+    # Se fascia troppo stretta allarga
+    if len(df_fascia) < 50:
+        margine   = 30
+        print(f"  [Compensazione] Poche estrazioni, "
+              f"allargo fascia di ±{margine}")
+        df_fascia = estrai_estrazioni_in_fascia(
             df, fascia_min-margine, fascia_max+margine
         )
 
-    # Calcola frequenze
-    df_freq = calcola_frequenze_numeri(df_fascia, df_cicli)
+    # Calcola frequenze su tutto il tabellone
+    df_freq = calcola_frequenze_numeri(
+        df, df_fascia, df_cicli, fascia_min, fascia_max
+    )
 
     # Seleziona pool
-    pool_df = seleziona_pool(
-        df_freq, fascia_min, fascia_max, n_numeri=30
-    )
+    pool_df     = seleziona_pool(df_freq, n_numeri=POOL_SIZE)
     pool_numeri = pool_df['numero'].tolist()
 
-    print(f"  [Compensazione] Pool selezionato ({len(pool_numeri)} numeri):")
+    print(f"  [Compensazione] Pool ({len(pool_numeri)} numeri):")
     print(f"    {sorted(pool_numeri)}")
-
-    # Dettaglio top 10
-    print("  [Compensazione] Top 10 per sottorappresentazione:")
-    for _, r in pool_df.head(10).iterrows():
-        print(f"    N.{int(r['numero']):2d} "
-              f"glob={r['freq_globale']:.4f} "
-              f"rec={r['freq_recente']:.4f} "
-              f"delta={r['delta']:.4f}")
+    print(f"  [Compensazione] Top 15 sottorappresentati:")
+    for _, r in pool_df.head(15).iterrows():
+        print(f"    N.{int(r['numero']):2d}  "
+              f"storico={r['freq_storica']:.4f}  "
+              f"recente={r['freq_recente']:.4f}  "
+              f"delta={r['delta']:+.4f}")
 
     # Salva su Supabase
     records = []
     for _, r in pool_df.iterrows():
         records.append({
-            "wyckoff_id": wyckoff_id,
-            "numero":     int(r['numero']),
-            "freq_zona":  float(r['freq_globale']),
-            "freq_attesa":float(r['freq_attesa']),
-            "delta":      float(r['delta']),
-            "incluso":    True,
+            "wyckoff_id":  wyckoff_id,
+            "numero":      int(r['numero']),
+            "freq_zona":   float(r['freq_storica']),
+            "freq_attesa": float(r['freq_attesa']),
+            "delta":       float(r['delta']),
+            "incluso":     True,
         })
-
     if records:
         client.table("pool_compensazione")\
             .insert(records).execute()
