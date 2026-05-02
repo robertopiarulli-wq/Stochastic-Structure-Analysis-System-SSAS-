@@ -202,76 +202,69 @@ def calcola_zone_saturazione(df_full, bin_size=BIN_SIZE):
 
     return df_zone
 def determina_fascia_target(somma_attuale, df_zone, trend):
-    """
-    Data posizione attuale e trend,
-    individua la prossima zona graal da raggiungere.
-    Priorità: transizione_graal > saturazione > normale
-    """
-    # Trova fascia attuale
+    # Trova indice zona attuale
     mask = ((df_zone['fascia_min'] <= somma_attuale) &
             (df_zone['fascia_max'] >  somma_attuale))
-    fascia_att = df_zone[mask]
-
-    if fascia_att.empty:
-        idx_att = 0
+    
+    if not df_zone[mask].empty:
+        idx_att   = df_zone[mask].index[0]
+        zona_att  = df_zone.iloc[idx_att]['tipo']
+        centro_att = df_zone.iloc[idx_att]['centro']
     else:
-        idx_att = fascia_att.index[0]
+        idx_att    = 0
+        zona_att   = 'normale'
+        centro_att = somma_attuale
 
-    zona_att = df_zone.iloc[idx_att]['tipo'] \
-               if idx_att < len(df_zone) else 'normale'
     print(f"  [Wyckoff] Siamo in zona: {zona_att} "
           f"(somma={somma_attuale})")
 
-    # Se siamo già in una transizione graal
-    # la fascia target è quella stessa
-    if zona_att == 'transizione_graal':
-        r = df_zone.iloc[idx_att]
-        print(f"  [Wyckoff] Siamo IN una zona graal!")
-        return int(r['fascia_min']), int(r['fascia_max'])
-
-    # Altrimenti cerca la prossima graal nel verso del trend
     if trend == 'markup':
+        # Cerca graal SOPRA la zona attuale
+        # esclude quella sovrapposta/uguale alla corrente
         candidate = df_zone[
-            (df_zone.index > idx_att) &
-            (df_zone['tipo'] == 'transizione_graal')
+            (df_zone['tipo'] == 'transizione_graal') &
+            (df_zone['centro'] > centro_att + 20)
         ]
+        if candidate.empty:
+            # Nessuna graal sopra → prossima saturazione
+            candidate = df_zone[
+                (df_zone['tipo'] == 'saturazione') &
+                (df_zone['centro'] > centro_att + 20)
+            ]
+
     elif trend == 'markdown':
+        # Cerca graal SOTTO la zona attuale
         candidate = df_zone[
-            (df_zone.index < idx_att) &
-            (df_zone['tipo'] == 'transizione_graal')
+            (df_zone['tipo'] == 'transizione_graal') &
+            (df_zone['centro'] < centro_att - 20)
         ].iloc[::-1]
+        if candidate.empty:
+            candidate = df_zone[
+                (df_zone['tipo'] == 'saturazione') &
+                (df_zone['centro'] < centro_att - 20)
+            ].iloc[::-1]
+
     else:
-        # Laterale: graal più vicina in assoluto
-        graal = df_zone[df_zone['tipo']=='transizione_graal'].copy()
-        graal['dist'] = abs(graal['centro'] - somma_attuale)
-        candidate = graal.sort_values('dist')
-
-    if not candidate.empty:
-        row = candidate.iloc[0]
-        print(f"  [Wyckoff] Prossima zona graal: "
-              f"{int(row['fascia_min'])}-{int(row['fascia_max'])}")
-        return int(row['fascia_min']), int(row['fascia_max'])
-
-    # Fallback: saturazione più vicina nel verso del trend
-    if trend == 'markup':
+        # Laterale → graal più vicina escludendo quella corrente
         candidate = df_zone[
-            (df_zone.index > idx_att) &
-            (df_zone['tipo'] == 'saturazione')
-        ]
-    else:
-        candidate = df_zone[
-            (df_zone.index < idx_att) &
-            (df_zone['tipo'] == 'saturazione')
-        ].iloc[::-1]
+            (df_zone['tipo'] == 'transizione_graal') &
+            (abs(df_zone['centro'] - centro_att) > 20)
+        ].copy()
+        if not candidate.empty:
+            candidate['dist'] = abs(
+                candidate['centro'] - centro_att
+            )
+            candidate = candidate.sort_values('dist')
 
-    if not candidate.empty:
-        row = candidate.iloc[0]
-        return int(row['fascia_min']), int(row['fascia_max'])
+    if candidate.empty:
+        # Fallback: media storica
+        centro = int(df_zone['centro'].mean())
+        return centro - 15, centro + 15
 
-    # Ultimo fallback: media storica
-    centro = int(df_zone['centro'].mean())
-    return centro - 15, centro + 15
-
+    row = candidate.iloc[0]
+    print(f"  [Wyckoff] Fascia target: "
+          f"{int(row['fascia_min'])}-{int(row['fascia_max'])}")
+    return int(row['fascia_min']), int(row['fascia_max'])
 def analizza_cicli(df_full, n_cicli=N_CICLI_FOCUS):
     cicli = []
     n     = len(df_full)
