@@ -1,10 +1,9 @@
 """
 SSAS - Motore 2: Compensazione Numerica
 Data la fascia target da Wyckoff,
-identifica i numeri sottorappresentati in quella zona
-negli ultimi N cicli rispetto allo storico completo.
-Il pool copre tutto il tabellone 1-90:
-una sestina con somma 260 può avere numeri ovunque.
+analizza le estrazioni storiche IN quella fascia,
+scarta i numeri più frequenti (già saturi)
+e usa i meno frequenti come pool di compensazione.
 """
 import numpy as np
 import pandas as pd
@@ -14,7 +13,7 @@ POOL_SIZE     = 30
 
 def estrai_estrazioni_in_fascia(df, fascia_min, fascia_max):
     """Estrazioni storiche con somma nella fascia target."""
-    cols  = ['n1','n2','n3','n4','n5','n6']
+    cols = ['n1','n2','n3','n4','n5','n6']
     if 'somma' not in df.columns:
         df = df.copy()
         df['somma'] = df[cols].sum(axis=1)
@@ -26,18 +25,22 @@ def calcola_frequenze_numeri(df_full, df_fascia,
                               df_cicli, fascia_min, fascia_max):
     """
     Per ogni numero 1-90:
-    - freq_storica: apparizioni nella fascia su tutto il db
-    - freq_recente: apparizioni nella fascia negli ultimi N cicli
+    - freq_storica: frequenza nella fascia su tutto lo storico
+    - freq_recente: frequenza nella fascia negli ultimi N cicli
     - delta: freq_recente - freq_storica
-      negativo = sottorappresentato recentemente = candidato pool
+    
+    I numeri con freq_storica bassa sono i candidati:
+    compaiono poco in quella fascia → mancano all'appello
+    → per costruzione sono compatibili con la fascia
+      perché calcolati SU estrazioni in quella fascia
     """
     cols  = ['n1','n2','n3','n4','n5','n6']
     n_tot = len(df_fascia)
 
     # Ultimi N cicli da 137
     if not df_cicli.empty:
-        idx_min = int(df_cicli['start_idx'].min())
-        df_rec  = df_full[df_full.index >= idx_min].copy()
+        idx_min       = int(df_cicli['start_idx'].min())
+        df_rec        = df_full[df_full.index >= idx_min].copy()
         if 'somma' not in df_rec.columns:
             df_rec['somma'] = df_rec[cols].sum(axis=1)
         df_rec_fascia = estrai_estrazioni_in_fascia(
@@ -53,7 +56,6 @@ def calcola_frequenze_numeri(df_full, df_fascia,
     print(f"  [Compensazione] Estrazioni in fascia (recenti): "
           f"{n_rec}")
 
-    # Matrice numpy per velocità
     arr_tot = df_fascia[cols].values     if n_tot > 0 else None
     arr_rec = df_rec_fascia[cols].values if n_rec > 0 else None
 
@@ -77,12 +79,26 @@ def calcola_frequenze_numeri(df_full, df_fascia,
 
 def seleziona_pool(df_freq, n_numeri=POOL_SIZE):
     """
-    Seleziona i numeri più sottorappresentati nella zona
-    negli ultimi cicli rispetto allo storico.
-    Delta negativo = mancano all'appello = candidati.
-    Tutto il tabellone 1-90 è candidabile.
+    Scarta i numeri più frequenti nella fascia (già saturi).
+    Tieni i meno frequenti (quelli che mancano).
+    
+    Logica:
+    - Escludi numeri mai apparsi in quella fascia (freq=0)
+      → incompatibili per costruzione
+    - Ordina per freq_storica crescente
+      → i meno presenti sono i candidati alla compensazione
+    - Prendi i top N
     """
-    df = df_freq.sort_values('delta', ascending=True)
+    df = df_freq.copy()
+
+    # Escludi numeri mai apparsi nella fascia
+    # (freq_storica=0 → incompatibili con quella zona)
+    df = df[df['freq_storica'] > 0]
+
+    # Ordina per frequenza storica crescente
+    # meno frequenti = più sottorappresentati = pool
+    df = df.sort_values('freq_storica', ascending=True)
+
     return df.head(n_numeri)
 
 def esegui_compensazione(df_raw, wyckoff_id, stato,
@@ -104,25 +120,25 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
 
     # Se fascia troppo stretta allarga
     if len(df_fascia) < 50:
-        margine   = 30
+        margine   = 20
         print(f"  [Compensazione] Poche estrazioni, "
               f"allargo fascia di ±{margine}")
         df_fascia = estrai_estrazioni_in_fascia(
             df, fascia_min-margine, fascia_max+margine
         )
 
-    # Calcola frequenze su tutto il tabellone
+    # Calcola frequenze dall'interno della fascia
     df_freq = calcola_frequenze_numeri(
         df, df_fascia, df_cicli, fascia_min, fascia_max
     )
 
-    # Seleziona pool
+    # Seleziona pool: meno frequenti nella fascia
     pool_df     = seleziona_pool(df_freq, n_numeri=POOL_SIZE)
     pool_numeri = pool_df['numero'].tolist()
 
     print(f"  [Compensazione] Pool ({len(pool_numeri)} numeri):")
     print(f"    {sorted(pool_numeri)}")
-    print(f"  [Compensazione] Top 15 sottorappresentati:")
+    print(f"  [Compensazione] Top 15 meno frequenti in fascia:")
     for _, r in pool_df.head(15).iterrows():
         print(f"    N.{int(r['numero']):2d}  "
               f"storico={r['freq_storica']:.4f}  "
