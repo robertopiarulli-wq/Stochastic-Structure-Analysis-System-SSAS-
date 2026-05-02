@@ -90,7 +90,6 @@ def carica_candidate(run_id):
 
 @st.cache_data(ttl=600)
 def carica_run_ids():
-    """Solo run con frequenze calcolate."""
     res = supabase.table("candidate_frequenze")\
         .select("run_id")\
         .execute()
@@ -114,80 +113,90 @@ def calcola_bollinger(series, period=137, std_dev=2):
     std = series.rolling(window=period).std()
     return sma + std_dev*std, sma, sma - std_dev*std
 
-# ── Selezione numeri bilanciata per band ─────────────────
-def seleziona_numeri_bilanciati(freq, n_numeri, fmin, fmax):
+# ── Covering design su candidate ─────────────────────────
+def genera_ridotto_da_candidate(candidate_list, garanzia=5):
     """
-    Seleziona numeri dalle candidate in target
-    distribuendoli su 6 band di 15 per garantire
-    compatibilità con la fascia somma target.
-    Aggiusta automaticamente se la somma non raggiunge
-    il target.
+    candidate_list: lista di tuple (n1..n6) già filtrate
+                    per somma in target Wyckoff
+    garanzia: 4 o 5
+
+    Trova il minimo sottoinsieme delle candidate
+    che copre tutte le combinazioni di <garanzia> numeri
+    presenti nel pool delle candidate stesse.
+
+    Le sestine output sono già strutturalmente valide
+    perché provengono dal generatore Wyckoff.
     """
-    BANDS = [(1,15),(16,30),(31,45),
-             (46,60),(61,75),(76,90)]
-    per_band = max(1, n_numeri // len(BANDS))
-    top_numeri = []
+    if not candidate_list:
+        return [], 0, []
 
-    for bmin, bmax in BANDS:
-        nums_band = {
-            n: c for n, c in freq.items()
-            if bmin <= n <= bmax
-        }
-        if not nums_band:
-            continue
-        top_band = sorted(
-            nums_band.keys(),
-            key=lambda n: nums_band[n],
-            reverse=True
-        )[:per_band]
-        top_numeri.extend(top_band)
+    # Numeri unici nel pool delle candidate in target
+    pool = sorted(set(n for s in candidate_list for n in s))
+    n_pool = len(pool)
 
-    top_numeri = sorted(set(top_numeri))
+    # Tutti i target da coprire (sottoinsiemi di garanzia)
+    tutti_target = list(combinations(pool, garanzia))
+    n_target     = len(tutti_target)
 
-    # Verifica compatibilità somme
-    def get_smin(nums):
-        return sum(sorted(nums)[:6]) if len(nums) >= 6 else 0
-    def get_smax(nums):
-        return sum(sorted(nums)[-6:]) if len(nums) >= 6 else 9999
+    # Indice target → sestine che lo coprono
+    target_idx = {t: i for i, t in enumerate(tutti_target)}
+    sestina_to_targets = {}
+    target_to_sestine  = [[] for _ in range(n_target)]
 
-    s_min = get_smin(top_numeri)
-    s_max = get_smax(top_numeri)
+    for s in candidate_list:
+        idxs = []
+        for t in combinations(s, garanzia):
+            if t in target_idx:
+                i = target_idx[t]
+                idxs.append(i)
+                target_to_sestine[i].append(s)
+        sestina_to_targets[s] = idxs
 
-    # Se somma max < target min → aggiungi numeri grandi
-    if s_max < fmin:
-        candidati = sorted(
-            {n: c for n, c in freq.items()
-             if n not in top_numeri}.keys(),
-            key=lambda n: freq[n], reverse=True
-        )
-        # Priorità ai più grandi tra i frequenti
-        candidati_alti = sorted(
-            [n for n in candidati if n >= 46],
-            key=lambda n: freq.get(n, 0), reverse=True
-        )
-        for n in candidati_alti:
-            top_numeri.append(n)
-            top_numeri = sorted(set(top_numeri))
-            if get_smax(top_numeri) >= fmin:
-                break
+    # Greedy ottimizzato con indice inverso
+    selezionate = []
+    non_coperti = set(range(n_target))
 
-    # Se somma min > target max → aggiungi numeri piccoli
-    s_min = get_smin(top_numeri)
-    if s_min > fmax:
-        candidati_bassi = sorted(
-            [n for n in freq.keys()
-             if n not in top_numeri and n <= 45],
-            key=lambda n: freq.get(n, 0), reverse=True
-        )
-        for n in candidati_bassi:
-            top_numeri.append(n)
-            top_numeri = sorted(set(top_numeri))
-            if get_smin(top_numeri) <= fmax:
-                break
+    # Punteggio iniziale
+    punteggi = {
+        s: len(set(sestina_to_targets[s]) & non_coperti)
+        for s in candidate_list
+    }
 
-    return sorted(top_numeri)
+    while non_coperti:
+        if not punteggi:
+            break
+        best = max(punteggi, key=lambda s: punteggi[s])
+        if punteggi[best] == 0:
+            break
 
-# ── Sistema Ridotto ───────────────────────────────────────
+        selezionate.append(best)
+
+        # Target appena coperti
+        nuovi_coperti = set(sestina_to_targets[best]) \
+                        & non_coperti
+        non_coperti  -= nuovi_coperti
+        punteggi[best] = -1  # escludi
+
+        # Aggiorna punteggi solo per sestine coinvolte
+        da_aggiornare = set()
+        for idx in nuovi_coperti:
+            for s in target_to_sestine[idx]:
+                da_aggiornare.add(s)
+
+        for s in da_aggiornare:
+            if punteggi.get(s, -1) >= 0:
+                punteggi[s] = len(
+                    set(sestina_to_targets[s]) & non_coperti
+                )
+
+    n_tot      = len(candidate_list)
+    efficienza = round(
+        (1 - len(selezionate)/n_tot) * 100, 1
+    ) if n_tot > 0 else 0
+
+    return selezionate, efficienza, pool
+
+# ── Sistema Ridotto manuale (su C(N,6)) ──────────────────
 def genera_sistema_ridotto(numeri, garanzia=5):
     numeri = sorted(numeri)
     if len(numeri) < 6:
@@ -195,34 +204,50 @@ def genera_sistema_ridotto(numeri, garanzia=5):
 
     target_size   = garanzia
     tutti_target  = list(combinations(numeri, target_size))
-    target_set    = set(tutti_target)
     tutte_sestine = list(combinations(numeri, 6))
 
-    copertura = {}
+    target_idx         = {t: i for i, t in enumerate(tutti_target)}
+    sestina_to_targets = {}
+    target_to_sestine  = [[] for _ in range(len(tutti_target))]
+
     for s in tutte_sestine:
-        copre = set()
+        idxs = []
         for t in combinations(s, target_size):
-            if t in target_set:
-                copre.add(t)
-        copertura[s] = copre
+            if t in target_idx:
+                i = target_idx[t]
+                idxs.append(i)
+                target_to_sestine[i].append(s)
+        sestina_to_targets[s] = idxs
 
     selezionate = []
-    non_coperti = set(tutti_target)
+    non_coperti = set(range(len(tutti_target)))
+    punteggi    = {
+        s: len(set(sestina_to_targets[s]) & non_coperti)
+        for s in tutte_sestine
+    }
 
     while non_coperti:
-        best     = None
-        best_cov = set()
-        for s, copre in copertura.items():
-            if s in selezionate:
-                continue
-            nuovi = copre & non_coperti
-            if len(nuovi) > len(best_cov):
-                best     = s
-                best_cov = nuovi
-        if best is None or len(best_cov) == 0:
+        if not punteggi:
             break
+        best = max(punteggi, key=lambda s: punteggi[s])
+        if punteggi[best] == 0:
+            break
+
         selezionate.append(best)
-        non_coperti -= best_cov
+        nuovi_coperti = set(sestina_to_targets[best]) \
+                        & non_coperti
+        non_coperti  -= nuovi_coperti
+        punteggi[best] = -1
+
+        da_aggiornare = set()
+        for idx in nuovi_coperti:
+            for s in target_to_sestine[idx]:
+                da_aggiornare.add(s)
+        for s in da_aggiornare:
+            if punteggi.get(s, -1) >= 0:
+                punteggi[s] = len(
+                    set(sestina_to_targets[s]) & non_coperti
+                )
 
     efficienza = round(
         (1 - len(selezionate)/len(tutte_sestine)) * 100, 1
@@ -231,7 +256,6 @@ def genera_sistema_ridotto(numeri, garanzia=5):
     return selezionate, efficienza
 
 def mostra_sistema(sistema, garanzia, key_prefix):
-    """Mostra dataframe sistema + download."""
     righe = []
     for i, s in enumerate(sistema):
         righe.append({
@@ -257,7 +281,6 @@ def mostra_sistema(sistema, garanzia, key_prefix):
 st.title("🎯 SSAS — Stochastic Structure Analysis System")
 st.caption("Analisi strutturale Superenalotto | Wyckoff + Parisi")
 
-# ── Tabs ──────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Costanti",
     "🗺️ Mappa 1-90",
@@ -278,9 +301,9 @@ with tab1:
     if not df_cost.empty:
         c1, c2, c3, c4 = st.columns(4)
         for col, nome, label in [
-            (c1, 'spacing_ratio', 'Spacing Ratio (Wigner-Dyson)'),
+            (c1, 'spacing_ratio', 'Spacing Ratio'),
             (c2, 'somma',        'Somma Media'),
-            (c3, 'cv_gap',       'CV Gap (Disordine)'),
+            (c3, 'cv_gap',       'CV Gap'),
             (c4, 'entropia_gap', 'Entropia Gap'),
         ]:
             r = df_cost[df_cost['nome']==nome]
@@ -459,10 +482,10 @@ with tab3:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        rsi_plot = rsi.tail(tail)
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(
-            x=df_plot['data_estrazione'], y=rsi_plot,
+            x=df_plot['data_estrazione'],
+            y=rsi.tail(tail),
             mode='lines', name='RSI(14)',
             line=dict(color='purple', width=1.5)
         ))
@@ -501,17 +524,13 @@ with tab4:
     st.subheader("🎯 Sestine Candidate Wyckoff")
     st.caption(
         "I numeri ALTA saturazione sono il pool Wyckoff. "
-        "I numeri BASSA sono il 6° calcolato per chiudere "
-        "la somma target."
+        "I numeri BASSA sono il 6° calcolato."
     )
 
     run_ids = carica_run_ids()
 
     if not run_ids:
-        st.warning(
-            "Nessun run disponibile. "
-            "Esegui analisi.py su GitHub Actions."
-        )
+        st.warning("Nessun run disponibile.")
     else:
         run_labels = {
             r: datetime.datetime.fromtimestamp(r)\
@@ -597,7 +616,7 @@ with tab4:
                             ))
 
             st.divider()
-            st.subheader(f"Prime 50 sestine candidate")
+            st.subheader("Prime 50 sestine candidate")
             if not df_cand.empty:
                 cols_n  = ['n1','n2','n3','n4','n5','n6']
                 df_show = df_cand.head(50)[cols_n].copy()
@@ -630,12 +649,13 @@ with tab5:
         fmax  = int(w_off['fascia_max'])
 
     # ── SEZIONE A: AUTOMATICA ────────────────────────────
-    st.markdown("### 🤖 Selezione Automatica da Candidate")
+    st.markdown("### 🤖 Sistema Ridotto Automatico")
     st.caption(
-        "Preleva automaticamente i numeri più presenti "
-        "nelle candidate con somma nel target Wyckoff, "
-        "bilanciati su 6 fasce del tabellone (1-15, 16-30...) "
-        "per garantire compatibilità con la somma target."
+        "Parte dalle sestine candidate già filtrate "
+        "per somma nel target Wyckoff. "
+        "Trova il minimo sottoinsieme che garantisce "
+        "copertura con garanzia 4 o 5. "
+        "Le sestine sono già strutturalmente valide."
     )
 
     if df_wyk_off.empty or not run_ids_off:
@@ -647,7 +667,7 @@ with tab5:
             f"Zona: **{w_off['zona_tipo']}**"
         )
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
         with c1:
             run_labels_off = {
                 r: datetime.datetime.fromtimestamp(r)\
@@ -661,12 +681,6 @@ with tab5:
                 key="run_auto"
             )
         with c2:
-            n_numeri_auto = st.slider(
-                "Quanti numeri estrarre:",
-                min_value=6, max_value=20,
-                value=12, key="n_auto"
-            )
-        with c3:
             garanzia_auto = st.radio(
                 "Garanzia:", options=[4, 5],
                 index=1, horizontal=True,
@@ -685,108 +699,114 @@ with tab5:
                 df_cand_auto['somma'] = \
                     df_cand_auto[cols_n].sum(axis=1)
 
+                # Filtra candidate nel target
                 df_in_target = df_cand_auto[
                     (df_cand_auto['somma'] >= fmin) &
                     (df_cand_auto['somma'] <= fmax)
                 ]
 
+                n_in  = len(df_in_target)
+                n_tot = len(df_cand_auto)
+
                 st.write(
                     f"Candidate nel target {fmin}-{fmax}: "
-                    f"**{len(df_in_target):,}** su "
-                    f"**{len(df_cand_auto):,}**"
+                    f"**{n_in:,}** su **{n_tot:,}**"
                 )
 
                 if df_in_target.empty:
                     st.error(
-                        f"Nessuna candidata nel target. "
+                        "Nessuna candidata nel target. "
                         "Rilancia analisi.py."
                     )
                 else:
-                    # Conta frequenza numeri nel target
-                    tutti = []
-                    for col in cols_n:
-                        tutti.extend(df_in_target[col].tolist())
-                    freq = Counter(tutti)
+                    # Converte in lista di tuple
+                    candidate_list = [
+                        tuple(sorted([
+                            row['n1'], row['n2'], row['n3'],
+                            row['n4'], row['n5'], row['n6']
+                        ]))
+                        for _, row in df_in_target.iterrows()
+                    ]
 
-                    # Selezione bilanciata per band
-                    top_numeri = seleziona_numeri_bilanciati(
-                        freq, n_numeri_auto, fmin, fmax
+                    # Pool numeri nelle candidate in target
+                    pool = sorted(set(
+                        n for s in candidate_list for n in s
+                    ))
+                    n_target_cover = len(
+                        list(combinations(pool, garanzia_auto))
                     )
 
-                    s_min_a = sum(sorted(top_numeri)[:6]) \
-                              if len(top_numeri) >= 6 else 0
-                    s_max_a = sum(sorted(top_numeri)[-6:]) \
-                              if len(top_numeri) >= 6 else 0
+                    st.info(
+                        f"Pool: **{len(pool)} numeri** unici "
+                        f"nelle candidate in target | "
+                        f"Combinazioni da coprire: "
+                        f"**{n_target_cover:,}** "
+                        f"(garanzia {garanzia_auto}) | "
+                        f"Sestine di partenza: **{n_in:,}**"
+                    )
+
+                    with st.spinner(
+                        f"Calcolo covering design "
+                        f"su {n_in:,} candidate..."
+                    ):
+                        sistema, efficienza, pool_out = \
+                            genera_ridotto_da_candidate(
+                                candidate_list, garanzia_auto
+                            )
 
                     st.success(
-                        f"**{len(top_numeri)} numeri** "
-                        f"selezionati (bilanciati su 6 fasce):"
+                        f"Sistema ridotto: "
+                        f"**{len(sistema)}** sestine | "
+                        f"Partenza: **{n_in:,}** | "
+                        f"Riduzione: **{efficienza}%** | "
+                        f"Garanzia: **{garanzia_auto}**"
                     )
-                    st.write(f"**{top_numeri}**")
+
                     st.caption(
-                        f"Somma min: **{s_min_a}** | "
-                        f"Somma max: **{s_max_a}** | "
-                        f"Target: **{fmin}-{fmax}**"
+                        f"Pool numeri coperti: "
+                        f"{sorted(pool_out)}"
                     )
 
-                    if s_max_a < fmin or s_min_a > fmax:
-                        st.error(
-                            "Ancora fuori target dopo "
-                            "aggiustamento. Prova con più "
-                            "numeri (es. 15-18)."
+                    if sistema:
+                        st.subheader(
+                            f"{len(sistema)} sestine "
+                            f"nel target {fmin}-{fmax}"
                         )
-                    else:
-                        n_full_a = len(
-                            list(combinations(top_numeri, 6))
-                        )
-                        st.info(
-                            f"Integrale: **{n_full_a:,}** "
-                            f"sestine | "
-                            f"Garanzia **{garanzia_auto}**"
+                        mostra_sistema(
+                            sistema, garanzia_auto, "auto"
                         )
 
-                        with st.spinner(
-                            "Calcolo sistema ridotto..."
-                        ):
-                            sistema_a, efficienza_a = \
-                                genera_sistema_ridotto(
-                                    top_numeri, garanzia_auto
-                                )
-
-                        sis_target_a = [
-                            s for s in sistema_a
-                            if fmin <= sum(s) <= fmax
-                        ]
-
-                        st.success(
-                            f"Ridotto totale: "
-                            f"**{len(sistema_a)}** sestine | "
-                            f"Nel target: "
-                            f"**{len(sis_target_a)}** | "
-                            f"Riduzione **{efficienza_a}%**"
+                        # Analisi copertura
+                        tutti_a = [n for s in sistema for n in s]
+                        freq_a  = Counter(tutti_a)
+                        freq_df_a = pd.DataFrame([
+                            {'numero': k, 'presenze': v,
+                             'pct': round(
+                                 v*100/len(sistema), 1
+                             )}
+                            for k, v in sorted(freq_a.items())
+                        ])
+                        fig_a = px.bar(
+                            freq_df_a, x='numero', y='pct',
+                            color='pct',
+                            color_continuous_scale='RdYlGn',
+                            title="Copertura numeri nel sistema"
                         )
-
-                        if sis_target_a:
-                            st.subheader(
-                                f"{len(sis_target_a)} sestine "
-                                f"nel target {fmin}-{fmax}"
-                            )
-                            mostra_sistema(
-                                sis_target_a,
-                                garanzia_auto, "auto"
-                            )
-                        else:
-                            st.warning(
-                                "Nessuna sestina nel target. "
-                                "Prova garanzia 4 o più numeri."
-                            )
+                        fig_a.update_layout(
+                            template="plotly_dark", height=250,
+                            margin=dict(l=20,r=20,t=40,b=20)
+                        )
+                        st.plotly_chart(
+                            fig_a, use_container_width=True
+                        )
 
     st.divider()
 
     # ── SEZIONE B: MANUALE ───────────────────────────────
     st.markdown("### ✏️ Selezione Manuale")
     st.caption(
-        "Inserisci i tuoi numeri e genera il sistema ridotto."
+        "Inserisci i tuoi numeri e genera il sistema ridotto "
+        "su C(N,6) con garanzia 4 o 5."
     )
 
     c1, c2 = st.columns([3, 1])
@@ -818,8 +838,6 @@ with tab5:
 
         if len(numeri) < 6:
             st.error("Inserisci almeno 6 numeri (1-90).")
-        elif len(numeri) > 20:
-            st.error("Massimo 20 numeri per volta.")
         else:
             if fmin and fmax:
                 s_min_m = sum(sorted(numeri)[:6])
@@ -830,8 +848,7 @@ with tab5:
                     st.warning(
                         f"⚠️ Somme possibili {s_min_m}-"
                         f"{s_max_m} fuori dal target "
-                        f"{fmin}-{fmax}. "
-                        "Il filtro target non troverà sestine."
+                        f"{fmin}-{fmax}."
                     )
 
             n_full_m = len(list(combinations(numeri, 6)))
