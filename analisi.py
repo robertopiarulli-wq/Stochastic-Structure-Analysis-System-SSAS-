@@ -147,3 +147,128 @@ for i in range(0, len(records), BATCH):
 print(f"  Salvate {len(sestine)} sestine candidate.")
 print("\n=== ANALISI COMPLETATA ===")
 print("Supabase aggiornato. Lancia dashboard.py su Streamlit.")
+
+# ── STEP 5: Wyckoff ──────────────────────────────────────
+print("\n[5/6] Analisi Wyckoff...")
+
+from moduli.wyckoff import esegui_wyckoff
+from moduli.compensazione import esegui_compensazione
+
+wyckoff_id, stato, df_zone, df_cicli = esegui_wyckoff(
+    df_raw = df,
+    client = supabase
+)
+
+# ── STEP 6: Compensazione + Sestine Wyckoff ──────────────
+print("\n[6/6] Compensazione numerica e generazione sestine...")
+
+pool_numeri = esegui_compensazione(
+    df_raw     = df,
+    wyckoff_id = wyckoff_id,
+    stato      = stato,
+    df_zone    = df_zone,
+    df_cicli   = df_cicli,
+    client     = supabase
+)
+
+# Genera sestine dal pool Wyckoff
+from moduli.generatore import (
+    carica_storico,
+    carica_triple_attive,
+    carica_mappa_occupazione,
+    ricerca_sistematica
+)
+
+storico_np, figure_viste = carica_storico(supabase)
+triple_attive            = carica_triple_attive(
+    supabase, n_estrazioni=50)
+mappa_z                  = carica_mappa_occupazione(supabase)
+
+# Adatta ricerca_sistematica per usare pool ristretto
+import random
+
+def ricerca_su_pool(pool, storico_np, triple_attive,
+                    mappa_z, n_campioni=2000000, max_sestine=5000):
+    """Motore 3 sul pool Wyckoff."""
+    from moduli.generatore import (
+        check_overlap, check_strutturali,
+        check_triple_attive, SOMMA_MIN, SOMMA_MAX
+    )
+    import numpy as np
+
+    # Adatta limiti somma alla fascia Wyckoff
+    fascia_min = stato['fascia_min']
+    fascia_max = stato['fascia_max']
+
+    trovate = []
+    scarti  = {"overlap":0,"strutturali":0,
+               "triple":0,"fuori_fascia":0}
+
+    for _ in range(n_campioni):
+        if len(trovate) >= max_sestine:
+            break
+        if len(pool) < 6:
+            break
+
+        sestina    = sorted(random.sample(pool, 6))
+        sestina_t  = tuple(sestina)
+        sestina_set= set(sestina)
+        somma      = sum(sestina)
+
+        # Filtro fascia Wyckoff
+        if not (fascia_min <= somma <= fascia_max):
+            scarti["fuori_fascia"] += 1
+            continue
+
+        # Filtro overlap
+        if not check_overlap(sestina_set, storico_np):
+            scarti["overlap"] += 1
+            continue
+
+        # Filtri strutturali
+        passa, _ = check_strutturali(sestina, mappa_z)
+        if not passa:
+            scarti["strutturali"] += 1
+            continue
+
+        # Triple attive
+        if not check_triple_attive(sestina_t, triple_attive):
+            scarti["triple"] += 1
+            continue
+
+        trovate.append(sestina)
+
+    print(f"  [Motore3-Wyckoff] Trovate: {len(trovate)}")
+    print(f"  [Motore3-Wyckoff] Scarti: {scarti}")
+    return trovate
+
+sestine_wyckoff = ricerca_su_pool(
+    pool        = pool_numeri,
+    storico_np  = storico_np,
+    triple_attive=triple_attive,
+    mappa_z     = mappa_z,
+    n_campioni  = 2000000,
+    max_sestine = 5000
+)
+
+# Salva sestine Wyckoff con tag specifico
+run_id_w = int(time.time()) + 1
+records_w = []
+for s in sestine_wyckoff:
+    records_w.append({
+        "n1": s[0], "n2": s[1], "n3": s[2],
+        "n4": s[3], "n5": s[4], "n6": s[5],
+        "passa_gap":     True,
+        "passa_somma":   True,
+        "score_armonia": 2.0,  # tag Wyckoff
+        "run_id":        run_id_w
+    })
+
+BATCH = 200
+for i in range(0, len(records_w), BATCH):
+    supabase.table("combinazioni_candidate")\
+        .insert(records_w[i:i+BATCH]).execute()
+
+print(f"  Salvate {len(sestine_wyckoff)} sestine Wyckoff "
+      f"(run_id={run_id_w})")
+print("\n=== ANALISI COMPLETATA ===")
