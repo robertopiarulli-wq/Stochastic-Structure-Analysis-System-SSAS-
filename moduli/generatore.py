@@ -313,11 +313,8 @@ def ricerca_su_pool(
         if sesto in set(cinque):
             scarti["no_sesto"] += 1
             continue
-        if sesto not in pool_set:
-            scarti["no_sesto"] += 1
-            continue
-
-        sestina     = tuple(sorted(cinque + [sesto]))
+       
+            sestina     = tuple(sorted(cinque + [sesto]))
         sestina_set = set(sestina)
         somma       = sum(sestina)
 
