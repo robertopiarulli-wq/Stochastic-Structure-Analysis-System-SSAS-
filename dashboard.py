@@ -296,24 +296,65 @@ with tab1:
                      use_container_width=True)
 
         st.subheader("Spacing Ratio vs sistemi fisici")
-        fig = go.Figure()
-        fig.add_vline(x=0.386, line_dash="dash",
-                      line_color="orange",
-                      annotation_text="Poisson 0.386")
-        fig.add_vline(x=0.536, line_dash="dash",
-                      line_color="green",
-                      annotation_text="GOE 0.536")
         sr = df_cost[df_cost['nome']=='spacing_ratio']
         if not sr.empty:
-            v = sr.iloc[0]['valore_medio']
-            s = sr.iloc[0]['std_dev']
-            fig.add_vline(x=v, line_color="red",
-                          annotation_text=f"Sistema {v:.4f}")
+            v = float(sr.iloc[0]['valore_medio'])
+            s = float(sr.iloc[0]['std_dev'])
+
+            fig = go.Figure()
+            # Traccia fittizia per dare range all'asse x
+            fig.add_trace(go.Scatter(
+                x=[0.20, 0.70], y=[0.5, 0.5],
+                mode='lines',
+                line=dict(color='rgba(0,0,0,0)'),
+                showlegend=False
+            ))
+            fig.add_vline(x=0.386, line_dash="dash",
+                          line_color="orange", line_width=2,
+                          annotation_text="Poisson 0.386",
+                          annotation_position="top right",
+                          annotation_font_color="orange")
+            fig.add_vline(x=0.536, line_dash="dash",
+                          line_color="lime", line_width=2,
+                          annotation_text="GOE 0.536",
+                          annotation_position="top right",
+                          annotation_font_color="lime")
+            fig.add_vline(x=v, line_color="red", line_width=3,
+                          annotation_text=f"Superenalotto {v:.4f}",
+                          annotation_position="top left",
+                          annotation_font_color="red")
             fig.add_vrect(x0=v-s, x1=v+s,
-                          fillcolor="red", opacity=0.1)
-        fig.update_layout(template="plotly_dark", height=180,
-                          margin=dict(l=20,r=20,t=20,b=20))
-        st.plotly_chart(fig, use_container_width=True)
+                          fillcolor="red", opacity=0.15,
+                          annotation_text=f"±σ",
+                          annotation_position="top left")
+            fig.update_layout(
+                template="plotly_dark",
+                height=220,
+                xaxis=dict(
+                    range=[0.20, 0.70],
+                    title="Spacing Ratio",
+                    showgrid=True,
+                    gridcolor="rgba(255,255,255,0.1)"
+                ),
+                yaxis=dict(visible=False),
+                margin=dict(l=20, r=20, t=40, b=40)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "**Cos'è lo Spacing Ratio?** "
+                "Misura come sono distribuiti i gap tra i 6 "
+                "numeri di ogni sestina. "
+                "**Poisson (0.386)** = numeri estratti "
+                "in modo completamente casuale, "
+                "gap distribuiti esponenzialmente. "
+                "**GOE (0.536)** = sistemi quantistici con "
+                "repulsione tra livelli energetici "
+                "(governa atomi, neutroni, mercati finanziari). "
+                f"**Superenalotto ({v:.4f})** si posiziona "
+                "tra i due: né puro caos né struttura forte. "
+                "Sigma vicino a zero conferma: "
+                "il sistema è essenzialmente random."
+            )
 
 # ════════════════════════════════════════════════════════
 # TAB 2 — MAPPA
