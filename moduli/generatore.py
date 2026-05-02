@@ -262,11 +262,6 @@ def ricerca_su_pool(
     max_sestine = 5000,
     seed        = 42
 ):
-    """
-    Campionamento casuale sul pool Wyckoff.
-    Aggiunge filtro fascia somma specifico.
-    Usato dal flusso Wyckoff (Step 6).
-    """
     random.seed(seed)
     np.random.seed(seed)
 
@@ -274,32 +269,61 @@ def ricerca_su_pool(
         print("  [Motore3-Wyckoff] Pool troppo piccolo, skip.")
         return []
 
-    print(f"\n  Avvio ricerca Wyckoff: {n_campioni:,} campioni")
+    print(f"\n  Avvio ricerca Wyckoff guidata dalla somma...")
     print(f"  Pool: {sorted(pool)}")
     print(f"  Fascia somma: {fascia_min}-{fascia_max}")
     print(f"  Max sestine: {max_sestine:,}")
 
+    # Converte pool in set per lookup veloce
+    pool_set = set(pool)
+
     sestine_trovate = []
     scarti = {
-        "fuori_fascia":  0,
+        "no_sesto":      0,
         "overlap":       0,
         "strutturali":   0,
         "figura_gap":    0,
         "triple_attive": 0,
     }
 
-    for i in range(n_campioni):
+    tentativi = 0
+
+    for _ in range(n_campioni):
         if len(sestine_trovate) >= max_sestine:
             break
 
-        sestina     = sorted(random.sample(pool, 6))
-        sestina_t   = tuple(sestina)
+        tentativi += 1
+
+        # Campiona 5 numeri dal pool
+        if len(pool) < 5:
+            break
+        cinque = sorted(random.sample(pool, 5))
+        somma5 = sum(cinque)
+
+        # Calcola il 6° numero necessario
+        # per ogni target in [fascia_min, fascia_max]
+        # scegli un target casuale nella fascia
+        target = random.randint(fascia_min, fascia_max)
+        sesto  = target - somma5
+
+        # Verifica validità del 6° numero
+        if sesto < 1 or sesto > 90:
+            scarti["no_sesto"] += 1
+            continue
+        if sesto in set(cinque):
+            scarti["no_sesto"] += 1
+            continue
+        if sesto not in pool_set:
+            scarti["no_sesto"] += 1
+            continue
+
+        sestina     = tuple(sorted(cinque + [sesto]))
         sestina_set = set(sestina)
         somma       = sum(sestina)
 
-        # FILTRO 0: Fascia Wyckoff
+        # Doppia verifica fascia (per sicurezza)
         if not (fascia_min <= somma <= fascia_max):
-            scarti["fuori_fascia"] += 1
+            scarti["no_sesto"] += 1
             continue
 
         # FILTRO 1: Overlap
@@ -307,9 +331,9 @@ def ricerca_su_pool(
             scarti["overlap"] += 1
             continue
 
-        # FILTRO 2: Strutturali con fascia Wyckoff
+        # FILTRO 2: Strutturali
         passa, motivo = check_strutturali(
-            sestina, mappa_z,
+            list(sestina), mappa_z,
             somma_min=fascia_min,
             somma_max=fascia_max
         )
@@ -318,27 +342,26 @@ def ricerca_su_pool(
             continue
 
         # FILTRO 3: Figure gap
-        if not check_figura_gap(sestina, figure_viste):
+        if not check_figura_gap(list(sestina), figure_viste):
             scarti["figura_gap"] += 1
             continue
 
         # FILTRO 4: Triple attive
-        if not check_triple_attive(sestina_t, triple_attive):
+        if not check_triple_attive(sestina, triple_attive):
             scarti["triple_attive"] += 1
             continue
 
-        sestine_trovate.append(sestina)
+        sestine_trovate.append(list(sestina))
 
         if len(sestine_trovate) % 500 == 0:
             print(f"  Trovate {len(sestine_trovate):,} "
-                  f"su {i+1:,} campioni...")
+                  f"su {tentativi:,} tentativi...")
 
-    # Report
     print(f"\n  === Risultati Wyckoff ===")
-    print(f"  Campioni testati: {min(i+1, n_campioni):,}")
+    print(f"  Tentativi:        {tentativi:,}")
     print(f"  Sestine trovate:  {len(sestine_trovate):,}")
     print(f"  Tasso successo:   "
-          f"{len(sestine_trovate)*100/max(i+1,1):.4f}%")
+          f"{len(sestine_trovate)*100/max(tentativi,1):.4f}%")
     print(f"\n  Scarti per filtro:")
     tot = sum(scarti.values())
     for k, v in scarti.items():
