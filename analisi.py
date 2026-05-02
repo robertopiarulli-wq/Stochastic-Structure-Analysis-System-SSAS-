@@ -163,3 +163,52 @@ for i in range(0, len(records), BATCH):
 
 print(f"  Salvate {len(sestine)} sestine candidate.")
 print("\n=== ANALISI COMPLETATA ===")
+
+# ── REPORT NUMERI CANDIDATE ──────────────────────────────
+if sestine:
+    import pandas as pd
+    from collections import Counter
+
+    tutti_numeri = [n for s in sestine for n in s]
+    freq         = Counter(tutti_numeri)
+    n_sestine    = len(sestine)
+
+    print(f"\n  === Composizione {n_sestine} sestine candidate ===")
+    print(f"  {'Num':>4} {'Presenze':>9} {'%':>7} {'Saturazione':>12}")
+    print(f"  {'-'*38}")
+
+    for numero in sorted(freq.keys()):
+        presenze = freq[numero]
+        pct      = presenze * 100 / n_sestine
+        if pct >= 15:
+            sat = "ALTA   🔴"
+        elif pct >= 8:
+            sat = "MEDIA  🟡"
+        else:
+            sat = "BASSA  🟢"
+        print(f"  {numero:>4} {presenze:>9} {pct:>6.1f}% {sat}")
+
+    # Salva in Supabase
+    records_freq = []
+    for numero, presenze in freq.items():
+        records_freq.append({
+            "run_id":    run_id,
+            "numero":    numero,
+            "presenze":  presenze,
+            "pct":       round(presenze * 100 / n_sestine, 2),
+        })
+
+    # Crea tabella se non esiste (SQL su Supabase):
+    # CREATE TABLE IF NOT EXISTS candidate_frequenze (
+    #   id BIGSERIAL PRIMARY KEY,
+    #   run_id BIGINT,
+    #   numero INTEGER,
+    #   presenze INTEGER,
+    #   pct FLOAT
+    # );
+    try:
+        supabase.table("candidate_frequenze")\
+            .insert(records_freq).execute()
+        print(f"\n  Frequenze salvate su Supabase.")
+    except Exception as e:
+        print(f"\n  (tabella candidate_frequenze non ancora creata: {e})")
