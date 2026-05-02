@@ -79,27 +79,54 @@ def calcola_frequenze_numeri(df_full, df_fascia,
 
 def seleziona_pool(df_freq, n_numeri=POOL_SIZE):
     """
-    Scarta i numeri più frequenti nella fascia (già saturi).
-    Tieni i meno frequenti (quelli che mancano).
-    
-    Logica:
-    - Escludi numeri mai apparsi in quella fascia (freq=0)
-      → incompatibili per costruzione
-    - Ordina per freq_storica crescente
-      → i meno presenti sono i candidati alla compensazione
-    - Prendi i top N
+    Divide 1-90 in 6 band di 15 numeri.
+    Per ogni band identifica i meno frequenti nella fascia.
+    Pool misto garantisce compatibilità con la somma target.
     """
-    df = df_freq.copy()
+    BANDS = [
+        (1,  15,  "B1"),
+        (16, 30,  "B2"),
+        (31, 45,  "B3"),
+        (46, 60,  "B4"),
+        (61, 75,  "B5"),
+        (76, 90,  "B6"),
+    ]
 
-    # Escludi numeri mai apparsi nella fascia
-    # (freq_storica=0 → incompatibili con quella zona)
-    df = df[df['freq_storica'] > 0]
+    df      = df_freq.copy()
+    n_bands = len(BANDS)
+    per_band= max(2, n_numeri // n_bands)
+    pool    = []
 
-    # Ordina per frequenza storica crescente
-    # meno frequenti = più sottorappresentati = pool
-    df = df.sort_values('freq_storica', ascending=True)
+    print(f"  [Compensazione] Analisi per band di 15:")
+    for bmin, bmax, label in BANDS:
+        df_band = df[
+            (df['numero'] >= bmin) &
+            (df['numero'] <= bmax) &
+            (df['freq_storica'] > 0)   # compatibili con la fascia
+        ].sort_values('freq_storica', ascending=True)
 
-    return df.head(n_numeri)
+        freq_media = df_band['freq_storica'].mean() \
+                     if not df_band.empty else 0
+        print(f"    {label} [{bmin:2d}-{bmax:2d}] "
+              f"presenti={len(df_band)} "
+              f"freq_media={freq_media:.4f}")
+
+        top = df_band.head(per_band)
+        pool.append(top)
+
+    df_pool = pd.concat(pool).drop_duplicates('numero')
+
+    # Se pool troppo piccolo aggiungi da tutto il resto
+    if len(df_pool) < n_numeri:
+        df_resto = df[
+            (~df['numero'].isin(df_pool['numero'])) &
+            (df['freq_storica'] > 0)
+        ].sort_values('freq_storica', ascending=True)
+        df_pool = pd.concat([df_pool, df_resto])\
+                    .drop_duplicates('numero')\
+                    .head(n_numeri)
+
+    return df_pool.sort_values('freq_storica').head(n_numeri)
 
 def esegui_compensazione(df_raw, wyckoff_id, stato,
                           df_zone, df_cicli, client):
