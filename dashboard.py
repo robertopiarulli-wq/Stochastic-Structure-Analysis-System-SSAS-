@@ -114,6 +114,79 @@ def calcola_bollinger(series, period=137, std_dev=2):
     std = series.rolling(window=period).std()
     return sma + std_dev*std, sma, sma - std_dev*std
 
+# ── Selezione numeri bilanciata per band ─────────────────
+def seleziona_numeri_bilanciati(freq, n_numeri, fmin, fmax):
+    """
+    Seleziona numeri dalle candidate in target
+    distribuendoli su 6 band di 15 per garantire
+    compatibilità con la fascia somma target.
+    Aggiusta automaticamente se la somma non raggiunge
+    il target.
+    """
+    BANDS = [(1,15),(16,30),(31,45),
+             (46,60),(61,75),(76,90)]
+    per_band = max(1, n_numeri // len(BANDS))
+    top_numeri = []
+
+    for bmin, bmax in BANDS:
+        nums_band = {
+            n: c for n, c in freq.items()
+            if bmin <= n <= bmax
+        }
+        if not nums_band:
+            continue
+        top_band = sorted(
+            nums_band.keys(),
+            key=lambda n: nums_band[n],
+            reverse=True
+        )[:per_band]
+        top_numeri.extend(top_band)
+
+    top_numeri = sorted(set(top_numeri))
+
+    # Verifica compatibilità somme
+    def get_smin(nums):
+        return sum(sorted(nums)[:6]) if len(nums) >= 6 else 0
+    def get_smax(nums):
+        return sum(sorted(nums)[-6:]) if len(nums) >= 6 else 9999
+
+    s_min = get_smin(top_numeri)
+    s_max = get_smax(top_numeri)
+
+    # Se somma max < target min → aggiungi numeri grandi
+    if s_max < fmin:
+        candidati = sorted(
+            {n: c for n, c in freq.items()
+             if n not in top_numeri}.keys(),
+            key=lambda n: freq[n], reverse=True
+        )
+        # Priorità ai più grandi tra i frequenti
+        candidati_alti = sorted(
+            [n for n in candidati if n >= 46],
+            key=lambda n: freq.get(n, 0), reverse=True
+        )
+        for n in candidati_alti:
+            top_numeri.append(n)
+            top_numeri = sorted(set(top_numeri))
+            if get_smax(top_numeri) >= fmin:
+                break
+
+    # Se somma min > target max → aggiungi numeri piccoli
+    s_min = get_smin(top_numeri)
+    if s_min > fmax:
+        candidati_bassi = sorted(
+            [n for n in freq.keys()
+             if n not in top_numeri and n <= 45],
+            key=lambda n: freq.get(n, 0), reverse=True
+        )
+        for n in candidati_bassi:
+            top_numeri.append(n)
+            top_numeri = sorted(set(top_numeri))
+            if get_smin(top_numeri) <= fmax:
+                break
+
+    return sorted(top_numeri)
+
 # ── Sistema Ridotto ───────────────────────────────────────
 def genera_sistema_ridotto(numeri, garanzia=5):
     numeri = sorted(numeri)
@@ -339,8 +412,8 @@ with tab3:
                       f"{int(w['fascia_min'])}-"
                       f"{int(w['fascia_max'])}")
             st.info(
-                f"Zona attuale: **{w['zona_tipo']}** | "
-                f"Cicli analizzati: {w['cicli_analizzati']}"
+                f"Zona: **{w['zona_tipo']}** | "
+                f"Cicli: {w['cicli_analizzati']}"
             )
 
         st.divider()
@@ -446,7 +519,7 @@ with tab4:
             for r in run_ids
         }
         run_sel = st.selectbox(
-            "Seleziona run di analisi:",
+            "Seleziona run:",
             options=run_ids,
             format_func=lambda x: run_labels[x]
         )
@@ -455,19 +528,14 @@ with tab4:
         df_cand = carica_candidate(run_sel)
 
         if df_freq.empty:
-            st.warning(
-                "Frequenze non disponibili. "
-                "Seleziona un run più recente."
-            )
+            st.warning("Frequenze non disponibili.")
         else:
             st.info(
-                f"**{len(df_cand):,}** sestine candidate | "
+                f"**{len(df_cand):,}** sestine | "
                 f"Run del {run_labels[run_sel]}"
             )
 
-            st.subheader(
-                "Frequenza numeri nelle sestine candidate"
-            )
+            st.subheader("Frequenza numeri nelle candidate")
             df_freq_sorted = df_freq.sort_values('numero')
             col_colors = df_freq_sorted['pct'].apply(
                 lambda p: '#ff4444' if p >= 15
@@ -494,9 +562,8 @@ with tab4:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            st.subheader("Numeri per livello di saturazione")
+            st.subheader("Numeri per livello")
             c1, c2, c3 = st.columns(3)
-
             alta  = df_freq[df_freq['pct'] >= 15]\
                 .sort_values('pct', ascending=False)
             media = df_freq[
@@ -506,19 +573,14 @@ with tab4:
 
             with c1:
                 st.write("🔴 **ALTA** (≥15%)")
-                st.caption("Pool Wyckoff dominante")
                 for _, r in alta.iterrows():
-                    st.write(
-                        f"**N.{int(r['numero']):2d}** → "
-                        f"{r['pct']:.1f}%"
-                    )
+                    st.write(f"**N.{int(r['numero']):2d}** → "
+                             f"{r['pct']:.1f}%")
             with c2:
                 st.write("🟡 **MEDIA** (8-15%)")
                 for _, r in media.iterrows():
-                    st.write(
-                        f"**N.{int(r['numero']):2d}** → "
-                        f"{r['pct']:.1f}%"
-                    )
+                    st.write(f"**N.{int(r['numero']):2d}** → "
+                             f"{r['pct']:.1f}%")
             with c3:
                 st.write("🟢 **Pool Wyckoff attivo**")
                 df_wyk_t = carica_wyckoff_stato()
@@ -527,9 +589,7 @@ with tab4:
                         int(df_wyk_t.iloc[0]['id'])
                     )
                     if not pool_df.empty:
-                        nums = sorted(
-                            pool_df['numero'].tolist()
-                        )
+                        nums = sorted(pool_df['numero'].tolist())
                         for i in range(0, len(nums), 5):
                             st.write(" ".join(
                                 f"**{n}**"
@@ -537,29 +597,20 @@ with tab4:
                             ))
 
             st.divider()
-            st.subheader(
-                f"Sestine candidate (prime 50 su "
-                f"{len(df_cand):,})"
-            )
+            st.subheader(f"Prime 50 sestine candidate")
             if not df_cand.empty:
                 cols_n  = ['n1','n2','n3','n4','n5','n6']
                 df_show = df_cand.head(50)[cols_n].copy()
-                df_show.columns = ['N1','N2','N3',
-                                   'N4','N5','N6']
+                df_show.columns = ['N1','N2','N3','N4','N5','N6']
                 df_show['Somma'] = df_show.sum(axis=1)
-                df_show['Range'] = (df_show['N6'] -
-                                    df_show['N1'])
-                df_show.insert(0, '#',
-                               range(1, len(df_show)+1))
-                st.dataframe(df_show,
-                             hide_index=True,
+                df_show['Range'] = df_show['N6'] - df_show['N1']
+                df_show.insert(0, '#', range(1, len(df_show)+1))
+                st.dataframe(df_show, hide_index=True,
                              use_container_width=True)
-
                 csv = df_cand[cols_n].to_csv(index=False)
                 st.download_button(
-                    "⬇️ Scarica tutte le candidate (CSV)",
-                    csv,
-                    f"candidate_{run_sel}.csv",
+                    "⬇️ Scarica tutte (CSV)",
+                    csv, f"candidate_{run_sel}.csv",
                     "text/csv"
                 )
 
@@ -572,7 +623,6 @@ with tab5:
     df_wyk_off  = carica_wyckoff_stato()
     run_ids_off = carica_run_ids()
 
-    # Recupera target Wyckoff corrente
     fmin = fmax = None
     if not df_wyk_off.empty:
         w_off = df_wyk_off.iloc[0]
@@ -582,15 +632,14 @@ with tab5:
     # ── SEZIONE A: AUTOMATICA ────────────────────────────
     st.markdown("### 🤖 Selezione Automatica da Candidate")
     st.caption(
-        "Preleva i numeri più presenti nelle candidate "
-        "con somma nel target Wyckoff e genera il ridotto."
+        "Preleva automaticamente i numeri più presenti "
+        "nelle candidate con somma nel target Wyckoff, "
+        "bilanciati su 6 fasce del tabellone (1-15, 16-30...) "
+        "per garantire compatibilità con la somma target."
     )
 
     if df_wyk_off.empty or not run_ids_off:
-        st.warning(
-            "Dati Wyckoff o candidate non disponibili. "
-            "Esegui analisi.py."
-        )
+        st.warning("Dati non disponibili. Esegui analisi.py.")
     else:
         st.info(
             f"🎯 Target Wyckoff: **{fmin}-{fmax}** | "
@@ -649,30 +698,31 @@ with tab5:
 
                 if df_in_target.empty:
                     st.error(
-                        f"Nessuna candidata nel target "
-                        f"{fmin}-{fmax}. "
+                        f"Nessuna candidata nel target. "
                         "Rilancia analisi.py."
                     )
                 else:
+                    # Conta frequenza numeri nel target
                     tutti = []
                     for col in cols_n:
-                        tutti.extend(
-                            df_in_target[col].tolist()
-                        )
+                        tutti.extend(df_in_target[col].tolist())
                     freq = Counter(tutti)
-                    top_numeri = sorted([
-                        n for n, _ in
-                        freq.most_common(n_numeri_auto)
-                    ])
+
+                    # Selezione bilanciata per band
+                    top_numeri = seleziona_numeri_bilanciati(
+                        freq, n_numeri_auto, fmin, fmax
+                    )
+
+                    s_min_a = sum(sorted(top_numeri)[:6]) \
+                              if len(top_numeri) >= 6 else 0
+                    s_max_a = sum(sorted(top_numeri)[-6:]) \
+                              if len(top_numeri) >= 6 else 0
 
                     st.success(
-                        f"Top **{n_numeri_auto}** numeri "
-                        f"estratti dal target:"
+                        f"**{len(top_numeri)} numeri** "
+                        f"selezionati (bilanciati su 6 fasce):"
                     )
                     st.write(f"**{top_numeri}**")
-
-                    s_min_a = sum(sorted(top_numeri)[:6])
-                    s_max_a = sum(sorted(top_numeri)[-6:])
                     st.caption(
                         f"Somma min: **{s_min_a}** | "
                         f"Somma max: **{s_max_a}** | "
@@ -681,9 +731,9 @@ with tab5:
 
                     if s_max_a < fmin or s_min_a > fmax:
                         st.error(
-                            "I numeri non raggiungono il "
-                            "target. Aumenta il numero "
-                            "da estrarre."
+                            "Ancora fuori target dopo "
+                            "aggiustamento. Prova con più "
+                            "numeri (es. 15-18)."
                         )
                     else:
                         n_full_a = len(
@@ -700,8 +750,7 @@ with tab5:
                         ):
                             sistema_a, efficienza_a = \
                                 genera_sistema_ridotto(
-                                    top_numeri,
-                                    garanzia_auto
+                                    top_numeri, garanzia_auto
                                 )
 
                         sis_target_a = [
@@ -719,9 +768,8 @@ with tab5:
 
                         if sis_target_a:
                             st.subheader(
-                                f"{len(sis_target_a)} "
-                                f"sestine nel target "
-                                f"{fmin}-{fmax}"
+                                f"{len(sis_target_a)} sestine "
+                                f"nel target {fmin}-{fmax}"
                             )
                             mostra_sistema(
                                 sis_target_a,
@@ -730,8 +778,7 @@ with tab5:
                         else:
                             st.warning(
                                 "Nessuna sestina nel target. "
-                                "Prova con più numeri "
-                                "o garanzia 4."
+                                "Prova garanzia 4 o più numeri."
                             )
 
     st.divider()
@@ -774,7 +821,6 @@ with tab5:
         elif len(numeri) > 20:
             st.error("Massimo 20 numeri per volta.")
         else:
-            # Avviso compatibilità target
             if fmin and fmax:
                 s_min_m = sum(sorted(numeri)[:6])
                 s_max_m = sum(sorted(numeri)[-6:])
@@ -784,7 +830,8 @@ with tab5:
                     st.warning(
                         f"⚠️ Somme possibili {s_min_m}-"
                         f"{s_max_m} fuori dal target "
-                        f"{fmin}-{fmax}."
+                        f"{fmin}-{fmax}. "
+                        "Il filtro target non troverà sestine."
                     )
 
             n_full_m = len(list(combinations(numeri, 6)))
@@ -796,9 +843,7 @@ with tab5:
 
             with st.spinner("Calcolo sistema ridotto..."):
                 sistema_m, efficienza_m = \
-                    genera_sistema_ridotto(
-                        numeri, garanzia_man
-                    )
+                    genera_sistema_ridotto(numeri, garanzia_man)
 
             if not sistema_m:
                 st.error("Impossibile generare il sistema.")
@@ -821,8 +866,7 @@ with tab5:
 
                 if sis_show:
                     st.subheader(
-                        f"{len(sis_show)} sestine "
-                        f"{label_filt}"
+                        f"{len(sis_show)} sestine {label_filt}"
                     )
                     mostra_sistema(
                         sis_show, garanzia_man, "man"
@@ -833,9 +877,8 @@ with tab5:
                         "Deseleziona filtro o cambia numeri."
                     )
 
-                # Grafico copertura
-                tutti_m  = [n for s in sistema_m for n in s]
-                freq_m   = Counter(tutti_m)
+                tutti_m   = [n for s in sistema_m for n in s]
+                freq_m    = Counter(tutti_m)
                 freq_df_m = pd.DataFrame([
                     {'numero': k, 'presenze': v,
                      'pct': round(v*100/len(sistema_m), 1)}
