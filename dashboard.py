@@ -1,17 +1,18 @@
 """
 SSAS - Dashboard Streamlit
-Visualizza analisi strutturale e sestine candidate.
+Analisi strutturale Superenalotto + Sistema Ridotto
 """
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from itertools import combinations
 from supabase import create_client
 
 # ── Configurazione ────────────────────────────────────────
 st.set_page_config(
-    page_title="SSAS - Stochastic Structure Analysis",
+    page_title="SSAS - Superenalotto Analysis",
     page_icon="🎯",
     layout="wide"
 )
@@ -39,55 +40,152 @@ def carica_mappa():
         .select("*").order("numero").execute()
     return pd.DataFrame(res.data)
 
-@st.cache_data(ttl=3600)
-def carica_ultime_estrazioni(n=20):
+@st.cache_data(ttl=600)
+def carica_estrazioni(limit=7304):
     res = supabase.table("estrazioni")\
         .select("*")\
-        .order("data_estrazione", desc=True)\
-        .limit(n)\
+        .order("data_estrazione", desc=False)\
+        .limit(limit)\
         .execute()
     return pd.DataFrame(res.data)
 
 @st.cache_data(ttl=600)
-def carica_candidate(run_id=None):
-    q = supabase.table("combinazioni_candidate")\
+def carica_wyckoff_stato():
+    res = supabase.table("wyckoff_stato")\
         .select("*")\
-        .order("score_armonia", desc=True)
-    if run_id:
-        q = q.eq("run_id", run_id)
-    res = q.limit(10000).execute()
-    return pd.DataFrame(res.data)
-
-@st.cache_data(ttl=3600)
-def carica_fingerprint():
-    res = supabase.table("fingerprint_estrazioni")\
-        .select("*")\
-        .order("data_estrazione", desc=False)\
-        .limit(10000)\
+        .order("run_at", desc=True)\
+        .limit(1)\
         .execute()
     return pd.DataFrame(res.data)
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600)
+def carica_pool(wyckoff_id):
+    res = supabase.table("pool_compensazione")\
+        .select("*")\
+        .eq("wyckoff_id", wyckoff_id)\
+        .eq("incluso", True)\
+        .execute()
+    return pd.DataFrame(res.data)
+
+@st.cache_data(ttl=600)
+def carica_candidate_frequenze(run_id):
+    res = supabase.table("candidate_frequenze")\
+        .select("*")\
+        .eq("run_id", run_id)\
+        .order("pct", desc=True)\
+        .execute()
+    return pd.DataFrame(res.data)
+
+@st.cache_data(ttl=600)
+def carica_candidate(run_id):
+    res = supabase.table("combinazioni_candidate")\
+        .select("*")\
+        .eq("run_id", run_id)\
+        .limit(5000)\
+        .execute()
+    return pd.DataFrame(res.data)
+
+@st.cache_data(ttl=600)
 def carica_run_ids():
     res = supabase.table("combinazioni_candidate")\
-        .select("run_id")\
+        .select("run_id, score_armonia")\
         .execute()
     df = pd.DataFrame(res.data)
     if df.empty:
         return []
     return sorted(df['run_id'].unique().tolist(), reverse=True)
 
+# ── Calcoli Wyckoff ───────────────────────────────────────
+def calcola_rsi(series, period=14):
+    delta    = series.diff()
+    gain     = delta.clip(lower=0)
+    loss     = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+def calcola_bollinger(series, period=137, std_dev=2):
+    sma = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    return sma + std_dev*std, sma, sma - std_dev*std
+
+# ── Sistema Ridotto ───────────────────────────────────────
+def genera_sistema_ridotto(numeri, garanzia=5):
+    """
+    Algoritmo greedy per sistema ridotto.
+    Trova il minimo set di sestine che garantisce
+    almeno una schedina con <garanzia> numeri giusti
+    se i 6 vincenti sono tutti nell'insieme.
+    """
+    numeri = sorted(numeri)
+    n      = len(numeri)
+
+    if n < 6:
+        return [], 0
+
+    # Genera tutti i sottoinsiemi da <garanzia> numeri
+    target_size  = garanzia
+    tutti_target = list(combinations(numeri, target_size))
+    target_set   = set(tutti_target)
+
+    # Genera tutte le sestine possibili
+    tutte_sestine = list(combinations(numeri, 6))
+
+    # Per ogni sestina calcola i target che copre
+    copertura = {}
+    for s in tutte_sestine:
+        copre = set()
+        for t in combinations(s, target_size):
+            if t in target_set:
+                copre.add(t)
+        copertura[s] = copre
+
+    # Greedy: scegli la sestina che copre di più
+    selezionate  = []
+    non_coperti  = set(tutti_target)
+
+    while non_coperti:
+        # Trova la sestina che copre più target non ancora coperti
+        best     = None
+        best_cov = set()
+        for s, copre in copertura.items():
+            if s in selezionate:
+                continue
+            nuovi = copre & non_coperti
+            if len(nuovi) > len(best_cov):
+                best     = s
+                best_cov = nuovi
+
+        if best is None or len(best_cov) == 0:
+            break
+
+        selezionate.append(best)
+        non_coperti -= best_cov
+
+    efficienza = round(
+        (1 - len(selezionate)/len(tutte_sestine)) * 100, 1
+    ) if tutte_sestine else 0
+
+    return selezionate, efficienza
+
+def check_overlap_dash(sestina, storico_np):
+    arr      = np.array(list(sestina))
+    overlaps = np.sum(np.isin(storico_np, arr), axis=1)
+    return int(overlaps.max()) < 4
+
 # ── Header ────────────────────────────────────────────────
 st.title("🎯 SSAS — Stochastic Structure Analysis System")
-st.caption("Analisi strutturale delle estrazioni Superenalotto")
+st.caption("Analisi strutturale Superenalotto | Wyckoff + Parisi")
 
 # ── Tabs ──────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Costanti Sistema",
-    "🗺️ Mappa Occupazione",
-    "📈 Fingerprint Storico",
-    "🎯 Sestine Candidate",
-    "🔢 Ultime Estrazioni"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📊 Costanti",
+    "🗺️ Mappa 1-90",
+    "📈 Wyckoff",
+    "🎯 Candidate",
+    "🔧 Officina",
+    "🔢 Estrazioni"
 ])
 
 # ════════════════════════════════════════════════════════
@@ -95,78 +193,43 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ════════════════════════════════════════════════════════
 with tab1:
     st.subheader("Costanti Strutturali del Sistema")
-    st.caption("Parametri calcolati su 7304 estrazioni storiche")
+    st.caption("Calcolate su 7304 estrazioni storiche")
 
     df_cost = carica_costanti()
-
     if not df_cost.empty:
-        # Metriche principali
-        col1, col2, col3, col4 = st.columns(4)
-
-        spacing = df_cost[df_cost['nome']=='spacing_ratio']
-        somma   = df_cost[df_cost['nome']=='somma']
-        cv      = df_cost[df_cost['nome']=='cv_gap']
-        entropia= df_cost[df_cost['nome']=='entropia_gap']
-
-        if not spacing.empty:
-            sr = spacing.iloc[0]
-            col1.metric(
-                "Spacing Ratio (Wigner-Dyson)",
-                f"{sr['valore_medio']:.4f}",
-                delta=f"Poisson=0.386 GOE=0.536",
-                delta_color="off"
-            )
-        if not somma.empty:
-            s = somma.iloc[0]
-            col2.metric(
-                "Somma Media",
-                f"{s['valore_medio']:.1f}",
-                delta=f"±{s['std_dev']:.1f}",
-                delta_color="off"
-            )
-        if not cv.empty:
-            c = cv.iloc[0]
-            col3.metric(
-                "CV Gap (Disordine)",
-                f"{c['valore_medio']:.4f}",
-                delta=f"±{c['std_dev']:.4f}",
-                delta_color="off"
-            )
-        if not entropia.empty:
-            e = entropia.iloc[0]
-            col4.metric(
-                "Entropia Gap",
-                f"{e['valore_medio']:.4f}",
-                delta=f"±{e['std_dev']:.4f}",
-                delta_color="off"
-            )
+        c1, c2, c3, c4 = st.columns(4)
+        for col, nome, label in [
+            (c1, 'spacing_ratio', 'Spacing Ratio (Wigner-Dyson)'),
+            (c2, 'somma',        'Somma Media'),
+            (c3, 'cv_gap',       'CV Gap (Disordine)'),
+            (c4, 'entropia_gap', 'Entropia Gap'),
+        ]:
+            r = df_cost[df_cost['nome']==nome]
+            if not r.empty:
+                r = r.iloc[0]
+                col.metric(label,
+                           f"{r['valore_medio']:.4f}",
+                           delta=f"±{r['std_dev']:.4f}",
+                           delta_color="off")
 
         st.divider()
-
-        # Tabella costanti con range
-        st.subheader("Range Storici (p5 → p95)")
         rows = []
         for _, r in df_cost.iterrows():
             rows.append({
-                "Parametro":    r['nome'],
-                "Media":        round(r['valore_medio'], 4),
-                "Std Dev":      round(r['std_dev'], 4),
-                "Min (p5)":     round(r['percentile_5'], 4),
-                "Max (p95)":    round(r['percentile_95'], 4),
-                "Sigma vs Random": round(r['sigma_da_random'], 3)
-                    if r['sigma_da_random'] else "—",
-                "Campioni":     r['n_campioni']
+                "Parametro":  r['nome'],
+                "Media":      round(r['valore_medio'], 4),
+                "Std":        round(r['std_dev'], 4),
+                "P5":         round(r['percentile_5'], 4),
+                "P95":        round(r['percentile_95'], 4),
+                "Sigma":      round(r['sigma_da_random'], 3)
+                              if r['sigma_da_random'] else "—",
             })
+        st.dataframe(pd.DataFrame(rows),
+                     hide_index=True,
+                     use_container_width=True)
 
-        df_display = pd.DataFrame(rows)
-        st.dataframe(
-            df_display,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        # Grafico distribuzione spacing ratio
-        st.subheader("Spacing Ratio nel contesto fisico")
+        # Spacing ratio nel contesto fisico
+        st.subheader("Spacing Ratio vs sistemi fisici")
         fig = go.Figure()
         fig.add_vline(x=0.386, line_dash="dash",
                       line_color="orange",
@@ -174,24 +237,16 @@ with tab1:
         fig.add_vline(x=0.536, line_dash="dash",
                       line_color="green",
                       annotation_text="GOE 0.536")
-
-        if not spacing.empty:
-            sr_val = spacing.iloc[0]['valore_medio']
-            sr_std = spacing.iloc[0]['std_dev']
-            fig.add_vline(x=sr_val, line_color="red",
-                          annotation_text=f"Sistema {sr_val:.4f}")
-            fig.add_vrect(
-                x0=sr_val-sr_std, x1=sr_val+sr_std,
-                fillcolor="red", opacity=0.1
-            )
-
-        fig.update_layout(
-            template="plotly_dark",
-            height=200,
-            xaxis_title="Spacing Ratio",
-            showlegend=False,
-            margin=dict(l=20, r=20, t=20, b=20)
-        )
+        sr = df_cost[df_cost['nome']=='spacing_ratio']
+        if not sr.empty:
+            v = sr.iloc[0]['valore_medio']
+            s = sr.iloc[0]['std_dev']
+            fig.add_vline(x=v, line_color="red",
+                          annotation_text=f"Sistema {v:.4f}")
+            fig.add_vrect(x0=v-s, x1=v+s,
+                          fillcolor="red", opacity=0.1)
+        fig.update_layout(template="plotly_dark", height=180,
+                          margin=dict(l=20,r=20,t=20,b=20))
         st.plotly_chart(fig, use_container_width=True)
 
 # ════════════════════════════════════════════════════════
@@ -199,201 +254,208 @@ with tab1:
 # ════════════════════════════════════════════════════════
 with tab2:
     st.subheader("Mappa Occupazione 1-90")
-    st.caption("Z-score: deviazione dalla frequenza attesa teorica")
-
     df_mappa = carica_mappa()
 
     if not df_mappa.empty:
-        col1, col2 = st.columns(2)
-
-        # Top 10 più frequenti
-        with col1:
+        c1, c2 = st.columns(2)
+        with c1:
             st.write("**Top 10 più frequenti**")
-            top10 = df_mappa.nlargest(10, 'freq_assoluta')[
-                ['numero','freq_assoluta','freq_relativa','z_score']
-            ]
-            st.dataframe(top10, hide_index=True,
-                        use_container_width=True)
-
-        # Top 10 più ritardatari
-        with col2:
+            st.dataframe(
+                df_mappa.nlargest(10, 'freq_assoluta')[
+                    ['numero','freq_assoluta',
+                     'freq_relativa','z_score']
+                ],
+                hide_index=True,
+                use_container_width=True
+            )
+        with c2:
             st.write("**Top 10 più ritardatari**")
-            rit10 = df_mappa.nlargest(10, 'ritardo_attuale')[
-                ['numero','ritardo_attuale','ritardo_medio',
-                 'ultimo_estratto']
-            ]
-            st.dataframe(rit10, hide_index=True,
-                        use_container_width=True)
+            st.dataframe(
+                df_mappa.nlargest(10, 'ritardo_attuale')[
+                    ['numero','ritardo_attuale',
+                     'ritardo_medio','ultimo_estratto']
+                ],
+                hide_index=True,
+                use_container_width=True
+            )
+
+        st.divider()
+        st.subheader("Heatmap Z-score")
+        z_vals = df_mappa['z_score'].values
+        numeri = df_mappa['numero'].values
+        grid_z = np.zeros((9, 10))
+        grid_n = np.zeros((9, 10), dtype=int)
+        for n, z in zip(numeri, z_vals):
+            r = (n-1) // 10
+            c = (n-1) % 10
+            grid_z[r][c] = z
+            grid_n[r][c] = n
+
+        fig = go.Figure(data=go.Heatmap(
+            z=grid_z, text=grid_n,
+            texttemplate="%{text}",
+            colorscale="RdBu_r", zmid=0,
+            colorbar=dict(title="Z-score")
+        ))
+        fig.update_layout(template="plotly_dark", height=320,
+                          margin=dict(l=20,r=20,t=20,b=20),
+                          xaxis_showticklabels=False,
+                          yaxis_showticklabels=False)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Rosso=sopra atteso | Blu=sotto atteso")
+
+# ════════════════════════════════════════════════════════
+# TAB 3 — WYCKOFF
+# ════════════════════════════════════════════════════════
+with tab3:
+    st.subheader("Analisi Wyckoff — Serie Storica Somme")
+
+    df_est = carica_estrazioni()
+    df_wyk = carica_wyckoff_stato()
+
+    if not df_est.empty:
+        cols = ['n1','n2','n3','n4','n5','n6']
+        df_est['somma'] = df_est[cols].sum(axis=1)
+        df_est['data_estrazione'] = pd.to_datetime(
+            df_est['data_estrazione'])
+        df_est = df_est.sort_values('data_estrazione')\
+                       .reset_index(drop=True)
+
+        somme   = df_est['somma']
+        bb_u, bb_m, bb_l = calcola_bollinger(somme, 137)
+        rsi     = calcola_rsi(somme, 14)
+
+        # Stato corrente
+        if not df_wyk.empty:
+            w = df_wyk.iloc[0]
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Somma attuale",
+                      int(w['somma_ultima']))
+            c2.metric("Trend", w['trend'].upper())
+            c3.metric("RSI", f"{w['rsi_attuale']:.1f}")
+            c4.metric("ADX", f"{w['adx_attuale']:.1f}")
+            c5.metric("Fascia target",
+                      f"{int(w['fascia_min'])}-"
+                      f"{int(w['fascia_max'])}")
+
+            st.info(f"Zona attuale: **{w['zona_tipo']}** | "
+                    f"Cicli analizzati: {w['cicli_analizzati']}")
 
         st.divider()
 
-        # Heatmap Z-score
-        st.subheader("Heatmap Z-score (deviazione da atteso)")
-        z_vals = df_mappa['z_score'].values
-        numeri = df_mappa['numero'].values
+        # Grafico candlestick somme + Bollinger
+        tail = 500
+        df_plot = df_est.tail(tail).copy()
+        bb_u_p  = bb_u.tail(tail)
+        bb_m_p  = bb_m.tail(tail)
+        bb_l_p  = bb_l.tail(tail)
 
-        # Griglia 9×10
-        grid_z = np.zeros((9, 10))
-        grid_n = np.zeros((9, 10), dtype=int)
-        for i, (n, z) in enumerate(zip(numeri, z_vals)):
-            row = (n-1) // 10
-            col = (n-1) % 10
-            grid_z[row][col] = z
-            grid_n[row][col] = n
-
-        fig = go.Figure(data=go.Heatmap(
-            z=grid_z,
-            text=grid_n,
-            texttemplate="%{text}",
-            colorscale="RdBu_r",
-            zmid=0,
-            colorbar=dict(title="Z-score")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df_plot['data_estrazione'],
+            y=df_plot['somma'],
+            mode='lines', name='Somma',
+            line=dict(color='white', width=1)
         ))
+        fig.add_trace(go.Scatter(
+            x=df_plot['data_estrazione'],
+            y=bb_u_p, mode='lines',
+            name='BB Upper(137)',
+            line=dict(color='red', dash='dash', width=1)
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_plot['data_estrazione'],
+            y=bb_m_p, mode='lines',
+            name='BB Media(137)',
+            line=dict(color='yellow', dash='dot', width=1)
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_plot['data_estrazione'],
+            y=bb_l_p, mode='lines',
+            name='BB Lower(137)',
+            line=dict(color='blue', dash='dash', width=1),
+            fill='tonexty', fillcolor='rgba(0,0,255,0.05)'
+        ))
+
+        # Evidenzia saturazioni e graal dal DB
+        if not df_wyk.empty:
+            fig.add_hline(
+                y=w['fascia_min'],
+                line_color="gold", line_dash="dash",
+                annotation_text=f"Target min {int(w['fascia_min'])}"
+            )
+            fig.add_hline(
+                y=w['fascia_max'],
+                line_color="gold", line_dash="dash",
+                annotation_text=f"Target max {int(w['fascia_max'])}"
+            )
+
         fig.update_layout(
-            template="plotly_dark",
-            height=350,
-            margin=dict(l=20, r=20, t=20, b=20),
-            xaxis_showticklabels=False,
-            yaxis_showticklabels=False
+            template="plotly_dark", height=350,
+            margin=dict(l=20,r=20,t=20,b=20),
+            legend=dict(orientation="h", y=-0.15)
         )
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Rosso = sopra atteso | Blu = sotto atteso")
 
-        # Densità locale
-        st.subheader("Densità Locale per numero")
-        fig2 = px.bar(
-            df_mappa,
-            x='numero',
-            y='densita_locale',
-            color='z_score',
-            color_continuous_scale='RdBu_r',
-            color_continuous_midpoint=0
-        )
+        # RSI
+        rsi_plot = rsi.tail(tail)
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(
+            x=df_plot['data_estrazione'],
+            y=rsi_plot, mode='lines',
+            name='RSI(14)',
+            line=dict(color='purple', width=1.5)
+        ))
+        fig2.add_hline(y=70, line_color="red",
+                       line_dash="dash",
+                       annotation_text="Iper-comprato 70")
+        fig2.add_hline(y=30, line_color="blue",
+                       line_dash="dash",
+                       annotation_text="Iper-venduto 30")
+        fig2.add_hrect(y0=30, y1=70,
+                       fillcolor="grey", opacity=0.05)
         fig2.update_layout(
-            template="plotly_dark",
-            height=300,
-            margin=dict(l=20, r=20, t=20, b=20)
+            template="plotly_dark", height=200,
+            margin=dict(l=20,r=20,t=10,b=20)
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-# ════════════════════════════════════════════════════════
-# TAB 3 — FINGERPRINT STORICO
-# ════════════════════════════════════════════════════════
-with tab3:
-    st.subheader("Evoluzione Strutturale nel Tempo")
-
-    df_fp = carica_fingerprint()
-
-    if not df_fp.empty:
-        df_fp['data_estrazione'] = pd.to_datetime(
-            df_fp['data_estrazione'])
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            # Spacing ratio nel tempo
-            fig = px.line(
-                df_fp.tail(500),
-                x='data_estrazione',
-                y='spacing_ratio_medio',
-                title="Spacing Ratio (ultime 500 estrazioni)"
-            )
-            fig.add_hline(y=0.386, line_dash="dash",
-                         line_color="orange",
-                         annotation_text="Poisson")
-            fig.add_hline(y=0.536, line_dash="dash",
-                         line_color="green",
-                         annotation_text="GOE")
-            fig.update_layout(
-                template="plotly_dark", height=300,
-                margin=dict(l=20, r=20, t=40, b=20)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            # Entropia gap nel tempo
-            fig2 = px.line(
-                df_fp.tail(500),
-                x='data_estrazione',
-                y='entropia_gap',
-                title="Entropia Gap (ultime 500 estrazioni)"
-            )
-            fig2.update_layout(
-                template="plotly_dark", height=300,
-                margin=dict(l=20, r=20, t=40, b=20)
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-
-        st.divider()
-
-        col3, col4 = st.columns(2)
-
-        with col3:
-            # Distribuzione somme
-            fig3 = px.histogram(
-                df_fp, x='somma',
-                nbins=50,
-                title="Distribuzione Somme",
-                color_discrete_sequence=['#636EFA']
-            )
-            fig3.add_vline(x=df_fp['somma'].mean(),
-                          line_color="red",
-                          annotation_text="media")
-            fig3.update_layout(
-                template="plotly_dark", height=300,
-                margin=dict(l=20, r=20, t=40, b=20)
-            )
-            st.plotly_chart(fig3, use_container_width=True)
-
-        with col4:
-            # Distribuzione CV gap
-            fig4 = px.histogram(
-                df_fp, x='cv_gap',
-                nbins=50,
-                title="Distribuzione CV Gap",
-                color_discrete_sequence=['#EF553B']
-            )
-            fig4.add_vline(x=df_fp['cv_gap'].mean(),
-                          line_color="red",
-                          annotation_text="media")
-            fig4.update_layout(
-                template="plotly_dark", height=300,
-                margin=dict(l=20, r=20, t=40, b=20)
-            )
-            st.plotly_chart(fig4, use_container_width=True)
-
-        # Overlap lag1 nel tempo
-        st.subheader("Overlap con estrazione precedente")
-        fig5 = px.bar(
-            df_fp.tail(100),
-            x='data_estrazione',
-            y='overlap_lag1',
-            title="Numeri in comune con estrazione precedente "
-                  "(ultime 100)"
+        # Distribuzione somme storiche (KDE visuale)
+        st.subheader("Distribuzione storica somme")
+        fig3 = px.histogram(
+            df_est, x='somma', nbins=80,
+            color_discrete_sequence=['#636EFA']
         )
-        fig5.update_layout(
-            template="plotly_dark", height=250,
-            margin=dict(l=20, r=20, t=40, b=20)
+        if not df_wyk.empty:
+            fig3.add_vline(x=w['somma_ultima'],
+                           line_color="white",
+                           annotation_text="Oggi")
+            fig3.add_vrect(
+                x0=w['fascia_min'], x1=w['fascia_max'],
+                fillcolor="gold", opacity=0.15,
+                annotation_text="Target"
+            )
+        fig3.update_layout(
+            template="plotly_dark", height=280,
+            margin=dict(l=20,r=20,t=20,b=20)
         )
-        st.plotly_chart(fig5, use_container_width=True)
+        st.plotly_chart(fig3, use_container_width=True)
 
 # ════════════════════════════════════════════════════════
 # TAB 4 — SESTINE CANDIDATE
 # ════════════════════════════════════════════════════════
 with tab4:
-    st.subheader("Sestine Candidate")
+    st.subheader("Sestine Candidate Wyckoff")
 
     run_ids = carica_run_ids()
-
     if not run_ids:
         st.warning("Nessuna sestina candidata. "
                    "Esegui prima analisi.py.")
     else:
-        # Selezione run
         import datetime
         run_labels = {
             r: datetime.datetime.fromtimestamp(r)\
-                .strftime("%d/%m/%Y %H:%M:%S")
+               .strftime("%d/%m/%Y %H:%M:%S")
             for r in run_ids
         }
         run_sel = st.selectbox(
@@ -402,170 +464,319 @@ with tab4:
             format_func=lambda x: run_labels[x]
         )
 
+        df_freq = carica_candidate_frequenze(run_sel)
         df_cand = carica_candidate(run_sel)
 
-        if not df_cand.empty:
-            st.info(f"**{len(df_cand):,}** sestine candidate "
-                    f"per questo run.")
+        if not df_freq.empty:
+            st.info(f"**{len(df_cand):,}** sestine candidate")
 
-            # Calcola fingerprint sulle candidate
-            def calc_somma(row):
-                return sum([row.n1,row.n2,row.n3,
-                           row.n4,row.n5,row.n6])
+            # Composizione numeri
+            st.subheader("Composizione per numero")
+            col_colors = df_freq['pct'].apply(
+                lambda p: '#ff4444' if p >= 15
+                else '#ffaa00' if p >= 8
+                else '#44ff44'
+            )
+            fig = go.Figure(go.Bar(
+                x=df_freq['numero'],
+                y=df_freq['pct'],
+                marker_color=col_colors,
+                text=df_freq['numero'],
+                textposition='outside'
+            ))
+            fig.add_hline(y=15, line_dash="dash",
+                          line_color="red",
+                          annotation_text="ALTA 15%")
+            fig.add_hline(y=8, line_dash="dash",
+                          line_color="orange",
+                          annotation_text="MEDIA 8%")
+            fig.update_layout(
+                template="plotly_dark", height=320,
+                margin=dict(l=20,r=20,t=20,b=20),
+                xaxis_title="Numero",
+                yaxis_title="% presenze"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-            cols_n = ['n1','n2','n3','n4','n5','n6']
-            df_cand['somma'] = df_cand[cols_n].sum(axis=1)
-            df_cand['range_tot'] = (df_cand['n6'] -
-                                    df_cand['n1'])
-            df_cand['n_pari'] = df_cand[cols_n]\
-                .apply(lambda r: sum(x%2==0 for x in r),
-                       axis=1)
+            # Top numeri per saturazione
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.write("🔴 **ALTA saturazione**")
+                alta = df_freq[df_freq['pct'] >= 15]\
+                    .sort_values('pct', ascending=False)
+                for _, r in alta.iterrows():
+                    st.write(f"N.{int(r['numero']):2d} → "
+                             f"{r['pct']:.1f}%")
+            with c2:
+                st.write("🟡 **MEDIA saturazione**")
+                media = df_freq[
+                    (df_freq['pct'] >= 8) &
+                    (df_freq['pct'] < 15)
+                ].sort_values('pct', ascending=False)
+                for _, r in media.iterrows():
+                    st.write(f"N.{int(r['numero']):2d} → "
+                             f"{r['pct']:.1f}%")
+            with c3:
+                st.write("🟢 **Pool Wyckoff**")
+                df_wyk = carica_wyckoff_stato()
+                if not df_wyk.empty:
+                    pool_df = carica_pool(
+                        int(df_wyk.iloc[0]['id'])
+                    )
+                    if not pool_df.empty:
+                        nums = sorted(
+                            pool_df['numero'].tolist()
+                        )
+                        st.write(str(nums))
 
-            col1, col2 = st.columns(2)
+            st.divider()
 
-            with col1:
-                # Distribuzione somme candidate
-                fig = px.histogram(
-                    df_cand, x='somma',
-                    nbins=40,
-                    title="Distribuzione Somme Candidate"
+            # Top 20 sestine
+            if not df_cand.empty:
+                st.subheader("Top 20 sestine candidate")
+                cols_n = ['n1','n2','n3','n4','n5','n6']
+                df_show = df_cand.head(20)[cols_n].copy()
+                df_show['somma'] = df_show[cols_n].sum(axis=1)
+                df_show['range'] = (df_show['n6'] -
+                                    df_show['n1'])
+                st.dataframe(df_show,
+                             hide_index=True,
+                             use_container_width=True)
+
+                # Download
+                csv = df_cand[cols_n].to_csv(index=False)
+                st.download_button(
+                    "⬇️ Scarica candidate (CSV)",
+                    csv,
+                    f"candidate_{run_sel}.csv",
+                    "text/csv"
+                )
+
+# ════════════════════════════════════════════════════════
+# TAB 5 — OFFICINA (SISTEMA RIDOTTO)
+# ════════════════════════════════════════════════════════
+with tab5:
+    st.subheader("🔧 Officina — Sistema Ridotto")
+    st.caption(
+        "Inserisci i tuoi numeri e genera un sistema ridotto "
+        "con garanzia 4 o 5."
+    )
+
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        numeri_input = st.text_input(
+            "Inserisci i numeri (separati da virgola o spazio):",
+            placeholder="Es: 7 15 22 35 48 63 71 82"
+        )
+    with c2:
+        garanzia = st.radio(
+            "Garanzia:",
+            options=[4, 5],
+            index=1,
+            horizontal=True
+        )
+
+    applica_filtri = st.checkbox(
+        "Applica filtri strutturali (overlap, spacing, ecc.)",
+        value=True
+    )
+
+    if st.button("🚀 Genera Sistema Ridotto", type="primary"):
+        # Parse input
+        import re
+        nums_raw = re.findall(r'\d+', numeri_input)
+        numeri   = sorted(set(int(n) for n in nums_raw
+                              if 1 <= int(n) <= 90))
+
+        if len(numeri) < 6:
+            st.error("Inserisci almeno 6 numeri (1-90).")
+        elif len(numeri) > 20:
+            st.error("Massimo 20 numeri per volta.")
+        else:
+            n_int   = len(numeri)
+            n_full  = len(list(combinations(numeri, 6)))
+            st.info(
+                f"**{n_int} numeri** → "
+                f"Sistema integrale: **{n_full:,}** sestine | "
+                f"Garanzia **{garanzia}** selezionata"
+            )
+
+            with st.spinner("Calcolo sistema ridotto..."):
+                sistema, efficienza = genera_sistema_ridotto(
+                    numeri, garanzia
+                )
+
+            if not sistema:
+                st.error("Impossibile generare il sistema.")
+            else:
+                st.success(
+                    f"Sistema ridotto: **{len(sistema)}** sestine "
+                    f"(riduzione **{efficienza}%** rispetto al pieno)"
+                )
+
+                # Applica filtri strutturali se richiesto
+                if applica_filtri:
+                    with st.spinner("Applicazione filtri..."):
+                        # Carica storico
+                        res = supabase.table("estrazioni")\
+                            .select("n1,n2,n3,n4,n5,n6")\
+                            .limit(10000)\
+                            .execute()
+                        storico = np.array([
+                            sorted([r['n1'],r['n2'],r['n3'],
+                                    r['n4'],r['n5'],r['n6']])
+                            for r in res.data
+                        ])
+
+                        # Carica mappa z-score
+                        mappa_z = {
+                            r['numero']: r['z_score'] or 0.0
+                            for r in supabase.table(
+                                "mappa_occupazione"
+                            ).select("numero,z_score").execute().data
+                        }
+
+                        # Filtri
+                        from moduli.generatore import (
+                            check_overlap,
+                            check_strutturali
+                        )
+
+                        filtrate = []
+                        scarti   = 0
+                        for s in sistema:
+                            s_set = set(s)
+                            if not check_overlap(s_set, storico):
+                                scarti += 1
+                                continue
+                            passa, _ = check_strutturali(
+                                list(s), mappa_z
+                            )
+                            if not passa:
+                                scarti += 1
+                                continue
+                            filtrate.append(s)
+
+                    sistema = filtrate
+                    st.info(
+                        f"Dopo filtri: **{len(sistema)}** sestine "
+                        f"({scarti} scartate)"
+                    )
+
+                # Mostra risultati
+                st.subheader(f"Le {len(sistema)} sestine del sistema")
+
+                righe = []
+                for i, s in enumerate(sistema):
+                    righe.append({
+                        "#":      i+1,
+                        "N1": s[0], "N2": s[1], "N3": s[2],
+                        "N4": s[3], "N5": s[4], "N6": s[5],
+                        "Somma":  sum(s),
+                        "Range":  s[-1] - s[0],
+                    })
+
+                df_sis = pd.DataFrame(righe)
+                st.dataframe(df_sis,
+                             hide_index=True,
+                             use_container_width=True)
+
+                # Analisi composizione
+                from collections import Counter
+                tutti = [n for s in sistema for n in s]
+                freq  = Counter(tutti)
+
+                st.subheader("Copertura numeri nel sistema")
+                freq_df = pd.DataFrame([
+                    {'numero': k, 'presenze': v,
+                     'pct': round(v*100/len(sistema), 1)}
+                    for k, v in sorted(freq.items())
+                ])
+                fig = px.bar(
+                    freq_df, x='numero', y='pct',
+                    color='pct',
+                    color_continuous_scale='RdYlGn',
+                    title="% presenze per numero"
                 )
                 fig.update_layout(
                     template="plotly_dark", height=280,
-                    margin=dict(l=20, r=20, t=40, b=20)
+                    margin=dict(l=20,r=20,t=40,b=20)
                 )
-                st.plotly_chart(fig,
-                               use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
 
-            with col2:
-                # Distribuzione range
-                fig2 = px.histogram(
-                    df_cand, x='range_tot',
-                    nbins=40,
-                    title="Distribuzione Range Candidate"
+                # Download
+                csv_sis = df_sis.to_csv(index=False)
+                st.download_button(
+                    "⬇️ Scarica sistema (CSV)",
+                    csv_sis,
+                    f"sistema_ridotto_g{garanzia}.csv",
+                    "text/csv"
                 )
-                fig2.update_layout(
-                    template="plotly_dark", height=280,
-                    margin=dict(l=20, r=20, t=40, b=20)
-                )
-                st.plotly_chart(fig2,
-                               use_container_width=True)
-
-            st.divider()
-
-            # Frequenza numeri nelle candidate
-            st.subheader("Frequenza numeri nelle candidate")
-            tutti = []
-            for col in cols_n:
-                tutti.extend(df_cand[col].tolist())
-            freq_series = pd.Series(tutti)\
-                .value_counts().sort_index()
-            freq_df = pd.DataFrame({
-                'numero': freq_series.index,
-                'freq':   freq_series.values
-            })
-
-            fig3 = px.bar(
-                freq_df, x='numero', y='freq',
-                title="Numeri più presenti nelle candidate",
-                color='freq',
-                color_continuous_scale='Viridis'
-            )
-            fig3.update_layout(
-                template="plotly_dark", height=300,
-                margin=dict(l=20, r=20, t=40, b=20)
-            )
-            st.plotly_chart(fig3, use_container_width=True)
-
-            st.divider()
-
-            # Top 20 candidate
-            st.subheader("Top 20 Candidate per Score")
-            top20 = df_cand.head(20)[
-                ['n1','n2','n3','n4','n5','n6',
-                 'somma','range_tot','n_pari',
-                 'score_armonia']
-            ].copy()
-            top20.columns = [
-                'N1','N2','N3','N4','N5','N6',
-                'Somma','Range','Pari','Score'
-            ]
-            st.dataframe(
-                top20,
-                hide_index=True,
-                use_container_width=True
-            )
-
-            # Download
-            csv = df_cand[cols_n + ['somma',
-                'range_tot','n_pari','score_armonia']]\
-                .to_csv(index=False)
-            st.download_button(
-                "⬇️ Scarica tutte le candidate (CSV)",
-                csv,
-                f"candidate_{run_sel}.csv",
-                "text/csv"
-            )
 
 # ════════════════════════════════════════════════════════
-# TAB 5 — ULTIME ESTRAZIONI
+# TAB 6 — ULTIME ESTRAZIONI
 # ════════════════════════════════════════════════════════
-with tab5:
+with tab6:
     st.subheader("Ultime Estrazioni")
 
-    n_show = st.slider("Quante estrazioni mostrare:",
-                       5, 100, 20)
-    df_ult = carica_ultime_estrazioni(n_show)
+    n_show = st.slider("Quante estrazioni:", 5, 100, 20)
+    res    = supabase.table("estrazioni")\
+        .select("*")\
+        .order("data_estrazione", desc=True)\
+        .limit(n_show)\
+        .execute()
+    df_ult = pd.DataFrame(res.data)
 
     if not df_ult.empty:
-        # Formatta visualizzazione
-        display_cols = ['data_estrazione',
-                       'n1','n2','n3','n4','n5','n6',
-                       'jolly','superstar']
-        df_show = df_ult[display_cols].copy()
-        df_show.columns = ['Data','N1','N2','N3',
-                          'N4','N5','N6','Jolly',
-                          'Superstar']
+        cols_n = ['n1','n2','n3','n4','n5','n6']
+        df_ult['somma'] = df_ult[cols_n].sum(axis=1)
+        df_ult['range'] = df_ult['n6'] - df_ult['n1']
+
         st.dataframe(
-            df_show,
+            df_ult[['data_estrazione'] + cols_n +
+                   ['jolly','superstar','somma','range']]\
+                .rename(columns={
+                    'data_estrazione': 'Data',
+                    'n1':'N1','n2':'N2','n3':'N3',
+                    'n4':'N4','n5':'N5','n6':'N6',
+                    'jolly':'Jolly',
+                    'superstar':'Superstar'
+                }),
             hide_index=True,
             use_container_width=True
         )
 
-        # Aggiungi somma e range
-        df_ult['somma'] = df_ult[['n1','n2','n3',
-                                  'n4','n5','n6']].sum(axis=1)
-        df_ult['range'] = df_ult['n6'] - df_ult['n1']
-
-        col1, col2 = st.columns(2)
-        with col1:
+        c1, c2 = st.columns(2)
+        with c1:
             fig = px.bar(
-                df_ult,
-                x='data_estrazione',
-                y='somma',
-                title="Somma ultime estrazioni"
+                df_ult.iloc[::-1],
+                x='data_estrazione', y='somma',
+                title="Somma ultime estrazioni",
+                color='somma',
+                color_continuous_scale='RdYlGn'
             )
             fig.add_hline(y=275.8, line_dash="dash",
-                         line_color="red",
-                         annotation_text="media storica")
+                          line_color="white",
+                          annotation_text="Media storica")
             fig.update_layout(
-                template="plotly_dark", height=280,
-                margin=dict(l=20, r=20, t=40, b=20)
+                template="plotly_dark", height=300,
+                margin=dict(l=20,r=20,t=40,b=20)
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        with col2:
+        with c2:
             fig2 = px.bar(
-                df_ult,
-                x='data_estrazione',
-                y='range',
-                title="Range ultime estrazioni"
+                df_ult.iloc[::-1],
+                x='data_estrazione', y='range',
+                title="Range ultime estrazioni",
+                color='range',
+                color_continuous_scale='Blues'
             )
             fig2.add_hline(y=65.3, line_dash="dash",
-                          line_color="red",
-                          annotation_text="media storica")
+                           line_color="white",
+                           annotation_text="Media storica")
             fig2.update_layout(
-                template="plotly_dark", height=280,
-                margin=dict(l=20, r=20, t=40, b=20)
+                template="plotly_dark", height=300,
+                margin=dict(l=20,r=20,t=40,b=20)
             )
             st.plotly_chart(fig2, use_container_width=True)
