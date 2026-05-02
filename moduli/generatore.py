@@ -21,11 +21,6 @@ SPACING_MAX = 0.65
 
 # ── Caricamento dati ─────────────────────────────────────
 def carica_storico(client):
-    """
-    Carica tutte le estrazioni e costruisce:
-    - storico_np: matrice numpy per overlap check veloce
-    - figure_viste: set vettori gap storici
-    """
     print("  Caricamento storico completo...")
     res = client.table("estrazioni")\
         .select("n1,n2,n3,n4,n5,n6")\
@@ -40,8 +35,7 @@ def carica_storico(client):
         ]))
         estrazioni.append(numeri)
 
-    storico_np = np.array(estrazioni)
-
+    storico_np   = np.array(estrazioni)
     figure_viste = set()
     for numeri in estrazioni:
         gaps = tuple(numeri[i+1] - numeri[i] for i in range(5))
@@ -49,14 +43,9 @@ def carica_storico(client):
 
     print(f"  Estrazioni caricate: {len(estrazioni):,}")
     print(f"  Figure gap viste:    {len(figure_viste):,}")
-
     return storico_np, figure_viste
 
 def carica_triple_attive(client, n_estrazioni=50):
-    """
-    Triple delle ultime N estrazioni.
-    Filtro temporale recente.
-    """
     res = client.table("estrazioni")\
         .select("n1,n2,n3,n4,n5,n6")\
         .order("data_estrazione", desc=True)\
@@ -77,7 +66,6 @@ def carica_triple_attive(client, n_estrazioni=50):
     return triple_attive
 
 def carica_mappa_occupazione(client):
-    """Z-score per ogni numero 1-90."""
     res = client.table("mappa_occupazione")\
         .select("numero,z_score")\
         .execute()
@@ -86,11 +74,6 @@ def carica_mappa_occupazione(client):
 
 # ── Calcoli strutturali O(1) ─────────────────────────────
 def calcola_spacing_ratio(numeri):
-    """
-    Spacing ratio Wigner-Dyson.
-    Poisson puro -> 0.386
-    GOE correlato -> 0.536
-    """
     gaps = [numeri[i+1] - numeri[i] for i in range(5)]
     ratios = []
     for i in range(len(gaps)-1):
@@ -105,21 +88,15 @@ def calcola_decadi(numeri):
 
 # ── Filtri a cascata ─────────────────────────────────────
 def check_overlap(sestina_set, storico_np):
-    """
-    FILTRO 1: overlap < 4 con qualsiasi estrazione storica.
-    Numpy per massima velocità.
-    """
     arr      = np.array(list(sestina_set))
     overlaps = np.sum(np.isin(storico_np, arr), axis=1)
     return int(overlaps.max()) < 4
 
 def check_figura_gap(numeri, figure_viste):
-    """FILTRO 2: forma geometrica mai vista."""
     gaps = tuple(numeri[i+1] - numeri[i] for i in range(5))
     return gaps not in figure_viste
 
 def check_triple_attive(sestina, triple_attive):
-    """FILTRO 3: nessuna tripla nelle attive recenti."""
     for t in combinations(sestina, 3):
         if t in triple_attive:
             return False
@@ -127,10 +104,6 @@ def check_triple_attive(sestina, triple_attive):
 
 def check_strutturali(numeri, mappa_z,
                       somma_min=SOMMA_MIN, somma_max=SOMMA_MAX):
-    """
-    FILTRO 4: parametri strutturali.
-    somma_min/max sovrascrivibili per flusso Wyckoff.
-    """
     somma = sum(numeri)
     if not (somma_min <= somma <= somma_max):
         return False, "somma"
@@ -167,17 +140,6 @@ def ricerca_sistematica(
     max_sestine = 10000,
     seed        = 42
 ):
-    """
-    Campionamento casuale con filtri a cascata.
-    Pool: tutti i 90 numeri.
-    Usato dal flusso base (Step 4).
-
-    Ordine filtri per massima efficienza:
-    1. Overlap < 4     (numpy, velocissimo)
-    2. Strutturali     (O(1))
-    3. Figure gap      (set lookup O(1))
-    4. Triple attive   (set lookup O(20))
-    """
     random.seed(seed)
     np.random.seed(seed)
 
@@ -186,15 +148,15 @@ def ricerca_sistematica(
 
     sestine_trovate = []
     scarti = {
-        "overlap":      0,
-        "somma":        0,
-        "range":        0,
-        "decadi":       0,
-        "parita":       0,
-        "spacing":      0,
-        "densita":      0,
-        "figura_gap":   0,
-        "triple_attive":0,
+        "overlap":       0,
+        "somma":         0,
+        "range":         0,
+        "decadi":        0,
+        "parita":        0,
+        "spacing":       0,
+        "densita":       0,
+        "figura_gap":    0,
+        "triple_attive": 0,
     }
 
     numeri_pool = list(range(1, 91))
@@ -207,23 +169,19 @@ def ricerca_sistematica(
         sestina_t   = tuple(sestina)
         sestina_set = set(sestina)
 
-        # FILTRO 1: Overlap
         if not check_overlap(sestina_set, storico_np):
             scarti["overlap"] += 1
             continue
 
-        # FILTRO 2: Strutturali
         passa, motivo = check_strutturali(sestina, mappa_z)
         if not passa:
             scarti[motivo] += 1
             continue
 
-        # FILTRO 3: Figure gap
         if not check_figura_gap(sestina, figure_viste):
             scarti["figura_gap"] += 1
             continue
 
-        # FILTRO 4: Triple attive
         if not check_triple_attive(sestina_t, triple_attive):
             scarti["triple_attive"] += 1
             continue
@@ -234,7 +192,6 @@ def ricerca_sistematica(
             print(f"  Trovate {len(sestine_trovate):,} "
                   f"su {i+1:,} campioni...")
 
-    # Report
     print(f"\n  === Risultati Base ===")
     print(f"  Campioni testati:  {min(i+1, n_campioni):,}")
     print(f"  Sestine trovate:   {len(sestine_trovate):,}")
@@ -265,7 +222,7 @@ def ricerca_su_pool(
     random.seed(seed)
     np.random.seed(seed)
 
-    if len(pool) < 6:
+    if len(pool) < 5:
         print("  [Motore3-Wyckoff] Pool troppo piccolo, skip.")
         return []
 
@@ -273,9 +230,6 @@ def ricerca_su_pool(
     print(f"  Pool: {sorted(pool)}")
     print(f"  Fascia somma: {fascia_min}-{fascia_max}")
     print(f"  Max sestine: {max_sestine:,}")
-
-    # Converte pool in set per lookup veloce
-    pool_set = set(pool)
 
     sestine_trovate = []
     scarti = {
@@ -295,14 +249,10 @@ def ricerca_su_pool(
         tentativi += 1
 
         # Campiona 5 numeri dal pool
-        if len(pool) < 5:
-            break
         cinque = sorted(random.sample(pool, 5))
         somma5 = sum(cinque)
 
-        # Calcola il 6° numero necessario
-        # per ogni target in [fascia_min, fascia_max]
-        # scegli un target casuale nella fascia
+        # Calcola il 6° numero per chiudere la somma target
         target = random.randint(fascia_min, fascia_max)
         sesto  = target - somma5
 
@@ -313,12 +263,13 @@ def ricerca_su_pool(
         if sesto in set(cinque):
             scarti["no_sesto"] += 1
             continue
-       
-            sestina     = tuple(sorted(cinque + [sesto]))
+
+        # Costruisci sestina: 5 dal pool + sesto calcolato
+        sestina     = tuple(sorted(cinque + [sesto]))
         sestina_set = set(sestina)
         somma       = sum(sestina)
 
-        # Doppia verifica fascia (per sicurezza)
+        # Doppia verifica fascia
         if not (fascia_min <= somma <= fascia_max):
             scarti["no_sesto"] += 1
             continue
