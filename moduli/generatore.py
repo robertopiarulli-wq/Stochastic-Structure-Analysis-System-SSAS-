@@ -228,10 +228,11 @@ def ricerca_su_pool(
     mappa_z,
     fascia_min,
     fascia_max,
-    vincoli     = None,
-    n_campioni  = 2000000,
-    max_sestine = 5000,
-    seed        = 42
+    vincoli        = None,
+    numeri_esclusi = None,
+    n_campioni     = 10000000,
+    max_sestine    = 999999,
+    seed           = 42
 ):
     random.seed(seed)
     np.random.seed(seed)
@@ -240,72 +241,76 @@ def ricerca_su_pool(
         print("  [Motore3-Wyckoff] Pool troppo piccolo, skip.")
         return []
 
-    print(f"\n  Avvio ricerca Wyckoff guidata dalla somma...")
+    # Rimuovi dal pool i numeri esclusi
+    if numeri_esclusi:
+        pool = [n for n in pool if n not in numeri_esclusi]
+        print(f"\n  Pool dopo esclusione ultime 3 estrazioni: "
+              f"{sorted(pool)} ({len(pool)} numeri)")
+
+    print(f"\n  Avvio ricerca Wyckoff — spazio completo")
     print(f"  Pool: {sorted(pool)}")
     print(f"  Fascia somma: {fascia_min}-{fascia_max}")
-    print(f"  Max sestine: {max_sestine:,}")
+    print(f"  Limite sestine: nessuno (max={max_sestine:,})")
     if vincoli:
         print(f"  Vincolo parità: "
               f"{vincoli['n_pari']}p/{vincoli['n_disp']}d "
               f"({vincoli['pct_pari']}% nella fascia)")
+    if numeri_esclusi:
+        print(f"  Numeri esclusi: {sorted(numeri_esclusi)}")
 
     sestine_trovate = []
+    sestine_set_viste = set()  # evita duplicati
     scarti = {
         "no_sesto":      0,
         "parita":        0,
-        "overlap":       0,
-        "strutturali":   0,
-        "figura_gap":    0,
-        "triple_attive": 0,
+        "duplicata":     0,
     }
 
     tentativi = 0
 
     for _ in range(n_campioni):
-        if len(sestine_trovate) >= max_sestine:
+        if len(pool) < 5:
             break
 
         tentativi += 1
 
-        # Campiona 5 numeri dal pool
         cinque = sorted(random.sample(pool, 5))
         somma5 = sum(cinque)
 
-        # Calcola il 6° numero per chiudere la somma target
         target = random.randint(fascia_min, fascia_max)
         sesto  = target - somma5
 
-        # Verifica validità del 6° numero
         if sesto < 1 or sesto > 90:
             scarti["no_sesto"] += 1
             continue
         if sesto in set(cinque):
             scarti["no_sesto"] += 1
             continue
+        if numeri_esclusi and sesto in numeri_esclusi:
+            scarti["no_sesto"] += 1
+            continue
 
-        # Costruisci sestina: 5 dal pool + sesto calcolato
-        sestina     = tuple(sorted(cinque + [sesto]))
-        sestina_set = set(sestina)
-        somma       = sum(sestina)
+        sestina = tuple(sorted(cinque + [sesto]))
+        somma   = sum(sestina)
 
-        # Doppia verifica fascia
         if not (fascia_min <= somma <= fascia_max):
             scarti["no_sesto"] += 1
             continue
 
-        # FILTRO 0: Parità intermedia della fascia
+        # Evita duplicati
+        if sestina in sestine_set_viste:
+            scarti["duplicata"] += 1
+            continue
+
+        # FILTRO 0: Parità
         if not check_parita_decade(sestina, vincoli):
             scarti["parita"] += 1
             continue
 
-        # FILTRO 1: Overlap — DISABILITATO (test)
-        # FILTRO 2: Strutturali — DISABILITATO (test)
-        # FILTRO 3: Figure gap — DISABILITATO (test)
-        # FILTRO 4: Triple attive — DISABILITATO (test)
-
         sestine_trovate.append(list(sestina))
+        sestine_set_viste.add(sestina)
 
-        if len(sestine_trovate) % 500 == 0:
+        if len(sestine_trovate) % 5000 == 0:
             print(f"  Trovate {len(sestine_trovate):,} "
                   f"su {tentativi:,} tentativi...")
 
