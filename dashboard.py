@@ -590,6 +590,197 @@ with tab4:
                     df_cand[cols_n].to_csv(index=False),
                     f"candidate_{run_sel}.csv", "text/csv")
 
+            # ── SEZIONE B: ANALISI PROSSIMITÀ ───────────────
+            st.divider()
+            st.subheader("🔍 Analisi Prossimità")
+            st.caption(
+                "Inserisci 6 numeri e vedi quante delle "
+                "candidate condividono 3, 4 o 5 numeri con essa."
+            )
+
+            with st.form("form_prossimita"):
+                inp_prox = st.text_input(
+                    "I tuoi 6 numeri (es: 7 22 35 48 63 80):",
+                    placeholder="7 22 35 48 63 80",
+                    key="inp_prox"
+                )
+                submitted_prox = st.form_submit_button(
+                    "🔍 Analizza Prossimità", type="primary"
+                )
+
+            if submitted_prox:
+                nums_prox = sorted(set(
+                    int(n) for n in re.findall(r'\d+', inp_prox)
+                    if 1 <= int(n) <= 90
+                ))
+                if len(nums_prox) != 6:
+                    st.error("Inserisci esattamente 6 numeri.")
+                elif df_cand.empty:
+                    st.error("Nessuna candidata caricata.")
+                else:
+                    set_prox = set(nums_prox)
+                    cols_n   = ['n1','n2','n3','n4','n5','n6']
+                    risultati = []
+                    for _, row in df_cand.iterrows():
+                        s     = tuple(sorted([
+                            row['n1'], row['n2'], row['n3'],
+                            row['n4'], row['n5'], row['n6']
+                        ]))
+                        ovlp  = len(set_prox & set(s))
+                        if ovlp >= 3:
+                            risultati.append({
+                                'overlap': ovlp,
+                                'N1': s[0], 'N2': s[1],
+                                'N3': s[2], 'N4': s[3],
+                                'N5': s[4], 'N6': s[5],
+                                'Somma': sum(s),
+                            })
+
+                    n3 = sum(1 for r in risultati if r['overlap']==3)
+                    n4 = sum(1 for r in risultati if r['overlap']==4)
+                    n5 = sum(1 for r in risultati if r['overlap']==5)
+                    n6 = sum(1 for r in risultati if r['overlap']==6)
+
+                    st.info(
+                        f"La tua sestina: **{nums_prox}** | "
+                        f"Somma: **{sum(nums_prox)}**"
+                    )
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("5 numeri in comune", n5,
+                              delta="vicinissime" if n5 > 0 else None)
+                    c2.metric("4 numeri in comune", n4)
+                    c3.metric("3 numeri in comune", n3)
+                    c4.metric("Esatta (6/6)", n6,
+                              delta="🎯 presente!" if n6 > 0 else None)
+
+                    if risultati:
+                        df_prox = pd.DataFrame(risultati)\
+                            .sort_values('overlap', ascending=False)
+                        st.subheader(
+                            f"Top candidate più vicine "
+                            f"({len(df_prox)} con ≥3 in comune)"
+                        )
+
+                        # Evidenzia numeri in comune
+                        def evidenzia(row):
+                            celle = []
+                            for col in ['N1','N2','N3',
+                                        'N4','N5','N6']:
+                                n = row[col]
+                                if n in set_prox:
+                                    celle.append(f"**{n}**")
+                                else:
+                                    celle.append(str(n))
+                            return ' - '.join(celle)
+
+                        df_prox['Numeri'] = df_prox.apply(
+                            evidenzia, axis=1)
+                        df_prox.insert(0, '#',
+                                       range(1, len(df_prox)+1))
+
+                        st.dataframe(
+                            df_prox[['#','overlap','Numeri',
+                                     'Somma']]\
+                                .rename(columns={
+                                    'overlap': 'In comune'}),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                    else:
+                        st.warning(
+                            "Nessuna candidata condivide "
+                            "3+ numeri con la tua sestina."
+                        )
+
+            # ── SEZIONE C: VERIFICA ESTRAZIONE ──────────────
+            st.divider()
+            st.subheader("🏆 Verifica Estrazione")
+            st.caption(
+                "Inserisci i 6 numeri usciti e vedi quante "
+                "candidate avrebbero vinto (3, 4, 5, 6 punti)."
+            )
+
+            with st.form("form_verifica"):
+                inp_verif = st.text_input(
+                    "Numeri usciti (es: 14 25 38 52 67 81):",
+                    placeholder="14 25 38 52 67 81",
+                    key="inp_verif"
+                )
+                submitted_verif = st.form_submit_button(
+                    "🏆 Verifica Risultato", type="primary"
+                )
+
+            if submitted_verif:
+                nums_verif = sorted(set(
+                    int(n) for n in re.findall(r'\d+', inp_verif)
+                    if 1 <= int(n) <= 90
+                ))
+                if len(nums_verif) != 6:
+                    st.error("Inserisci esattamente 6 numeri.")
+                elif df_cand.empty:
+                    st.error("Nessuna candidata caricata.")
+                else:
+                    set_verif = set(nums_verif)
+                    cols_n    = ['n1','n2','n3','n4','n5','n6']
+                    vincenti  = {3: [], 4: [], 5: [], 6: []}
+
+                    for _, row in df_cand.iterrows():
+                        s    = tuple(sorted([
+                            row['n1'], row['n2'], row['n3'],
+                            row['n4'], row['n5'], row['n6']
+                        ]))
+                        ovlp = len(set_verif & set(s))
+                        if ovlp >= 3:
+                            vincenti[ovlp].append(s)
+
+                    st.info(
+                        f"Estrazione: **{nums_verif}** | "
+                        f"Somma: **{sum(nums_verif)}**"
+                    )
+
+                    c1, c2, c3, c4 = st.columns(4)
+                    c4.metric("🥇 Punti 6", len(vincenti[6]),
+                              delta="JACKPOT! 🎉"
+                              if vincenti[6] else None)
+                    c3.metric("🥈 Punti 5", len(vincenti[5]))
+                    c2.metric("🥉 Punti 4", len(vincenti[4]))
+                    c1.metric("✅ Punti 3", len(vincenti[3]))
+
+                    # Mostra dettaglio per categoria
+                    for punti in [6, 5, 4, 3]:
+                        if vincenti[punti]:
+                            emoji = {6:"🥇",5:"🥈",4:"🥉",3:"✅"}
+                            st.subheader(
+                                f"{emoji[punti]} Punti {punti} "
+                                f"— {len(vincenti[punti])} schedine"
+                            )
+                            righe = []
+                            for i, s in enumerate(vincenti[punti]):
+                                # Evidenzia numeri vincenti
+                                nums_fmt = []
+                                for n in s:
+                                    if n in set_verif:
+                                        nums_fmt.append(f"**{n}**")
+                                    else:
+                                        nums_fmt.append(str(n))
+                                righe.append({
+                                    '#':      i+1,
+                                    'Numeri': ' - '.join(nums_fmt),
+                                    'Somma':  sum(s),
+                                    'Punti':  punti,
+                                })
+                            st.dataframe(
+                                pd.DataFrame(righe),
+                                hide_index=True,
+                                use_container_width=True
+                            )
+
+                    if not any(vincenti.values()):
+                        st.warning(
+                            "Nessuna candidata ha fatto "
+                            "3+ punti con questa estrazione."
+                        )
+
 # ════════════════════════════════════════════════════════
 # TAB 5 — OFFICINA
 # ════════════════════════════════════════════════════════
