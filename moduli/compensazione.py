@@ -263,15 +263,38 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
     pool_bassa, pool_media, pool_alta, universo = \
         seleziona_universo_tre_fasce(df_freq, n_per_fascia=12)
 
-    pool_numeri = universo  # 30 numeri totali
+    # Filtra per ritardo: top 20 più attesi dall'universo
+    # Carica ritardi dalla mappa_occupazione
+    res_mappa = client.table("mappa_occupazione")\
+        .select("numero,ritardo_attuale")\
+        .execute()
+    df_ritardi = pd.DataFrame(res_mappa.data)
+
+    # Prendi ritardi solo per i numeri dell'universo
+    df_rit_univ = df_ritardi[
+        df_ritardi['numero'].isin(universo)
+    ].sort_values('ritardo_attuale', ascending=False)
+
+    # Top 20 per ritardo
+    universo_20 = df_rit_univ.head(20)['numero'].tolist()
+    universo_20 = sorted(universo_20)
+
+    print(f"  [Compensazione] Filtro ritardo → top 20 più attesi:")
+    for _, r in df_rit_univ.head(20).iterrows():
+        print(f"    N.{int(r['numero']):2d} → "
+              f"ritardo={int(r['ritardo_attuale'])}")
+    print(f"  [Compensazione] Universo finale "
+          f"(20 numeri): {universo_20}")
+
+    pool_numeri = universo_20
 
     # Analisi struttura storica della fascia
     print(f"\n  [Struttura] Analisi parità+decade nella fascia...")
     vincoli = analizza_struttura_fascia(df_fascia)
 
-    # Salva su Supabase
+    # Salva su Supabase — tutti 36 con flag incluso=True solo top 20
     records = []
-    for n in pool_bassa:
+    for n in universo:
         r = df_freq[df_freq['numero']==n].iloc[0]
         records.append({
             "wyckoff_id":  wyckoff_id,
@@ -279,39 +302,20 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
             "freq_zona":   float(r['freq_storica']),
             "freq_attesa": float(r['freq_attesa']),
             "delta":       float(r['delta']),
-            "incluso":     True,
-        })
-    for n in pool_media:
-        r = df_freq[df_freq['numero']==n].iloc[0]
-        records.append({
-            "wyckoff_id":  wyckoff_id,
-            "numero":      n,
-            "freq_zona":   float(r['freq_storica']),
-            "freq_attesa": float(r['freq_attesa']),
-            "delta":       float(r['delta']),
-            "incluso":     True,
-        })
-    for n in pool_alta:
-        r = df_freq[df_freq['numero']==n].iloc[0]
-        records.append({
-            "wyckoff_id":  wyckoff_id,
-            "numero":      n,
-            "freq_zona":   float(r['freq_storica']),
-            "freq_attesa": float(r['freq_attesa']),
-            "delta":       float(r['delta']),
-            "incluso":     True,
+            "incluso":     n in universo_20,
         })
     if records:
         client.table("pool_compensazione")\
             .insert(records).execute()
-        print(f"  [Compensazione] Universo salvato su Supabase "
-              f"({len(universo)} numeri, 10 per fascia di valore)")
+        print(f"  [Compensazione] Pool salvato: "
+              f"{len(universo)} universo | "
+              f"{len(universo_20)} attivi (top ritardo)")
 
     # Aggiorna wyckoff_stato con vincolo parità e logica
     if vincoli:
         try:
-            n_p = vincoli['n_pari']
-            logica = f"{n_p}p/{6-n_p}d+{n_p-1}p/{6-(n_p-1)}d"
+            n_p    = vincoli['n_pari']
+            logica = f"{n_p}p/{6-n_p}d"
             client.table("wyckoff_stato")\
                 .update({
                     "vincolo_n_pari":   n_p,
