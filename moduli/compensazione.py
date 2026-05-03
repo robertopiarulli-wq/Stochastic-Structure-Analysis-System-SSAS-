@@ -134,7 +134,12 @@ def analizza_struttura_fascia(df_fascia):
     Trova la distribuzione INTERMEDIA di:
     - parità (n. numeri pari per sestina)
     - decadi B=1-30, M=31-60, A=61-90
-    Restituisce i vincoli intermedi da applicare al generatore.
+
+    LOGICA INTERMEDIA CORRETTA:
+    Non prende la posizione centrale della lista
+    ma il valore con frequenza più vicina alla MEDIANA
+    delle frequenze → esclude sia i dominanti
+    sia i rarissimi, prende il centro della distribuzione.
     """
     from collections import Counter
     cols = ['n1','n2','n3','n4','n5','n6']
@@ -143,25 +148,35 @@ def analizza_struttura_fascia(df_fascia):
         return None
 
     # ── Parità ───────────────────────────────────────────
-    parita_counts = Counter()
+    parita_counts_raw = Counter()
     for _, row in df_fascia.iterrows():
         n_pari = sum(1 for c in cols if row[c] % 2 == 0)
-        parita_counts[n_pari] += 1
+        parita_counts_raw[n_pari] += 1
 
-    parita_sorted  = sorted(parita_counts.items(),
-                            key=lambda x: x[1], reverse=True)
+    # Mantieni solo distribuzioni centrali: 2p/4d, 3p/3d, 4p/2d
+    # Escludi gli estremi: 0p/6d, 1p/5d, 5p/1d, 6p/0d
+    parita_counts = {k: v for k, v in parita_counts_raw.items()
+                     if k in [2, 3, 4]}
+    if not parita_counts:
+        parita_counts = dict(parita_counts_raw)
 
-    freqs_p       = [cnt for _, cnt in parita_sorted]
-mediana_p     = sorted(freqs_p)[len(freqs_p) // 2]
-n_pari_target = min(parita_sorted,
-                    key=lambda x: abs(x[1]-mediana_p))[0]
-    pct_pari       = round(parita_counts[n_pari_target]*100/n, 1)
+    parita_sorted = sorted(parita_counts.items(),
+                           key=lambda x: x[1], reverse=True)
 
-    print(f"  [Struttura] Distribuzione parità nella fascia:")
-    for np_, cnt in parita_sorted:
-        marker = " ← INTERMEDIA" if np_ == n_pari_target else ""
+    # Mediana delle frequenze tra i 3 valori centrali
+    freqs_p       = sorted([cnt for _, cnt in parita_sorted])
+    mediana_p     = freqs_p[len(freqs_p) // 2]
+    n_pari_target = min(parita_sorted,
+                        key=lambda x: abs(x[1] - mediana_p))[0]
+    pct_pari      = round(parita_counts_raw[n_pari_target]*100/n, 1)
+
+    print(f"  [Struttura] Distribuzione parità (solo 2p-4p):")
+    for np_ in sorted(parita_counts_raw.keys()):
+        cnt    = parita_counts_raw[np_]
+        esclusa = " [esclusa]" if np_ not in [2, 3, 4] else ""
+        marker  = " ← INTERMEDIA" if np_ == n_pari_target else ""
         print(f"    {np_}p/{6-np_}d: "
-              f"{cnt} ({cnt*100/n:.1f}%){marker}")
+              f"{cnt} ({cnt*100/n:.1f}%){esclusa}{marker}")
 
     # ── Decadi B=1-30, M=31-60, A=61-90 ─────────────────
     decade_counts = Counter()
@@ -171,11 +186,15 @@ n_pari_target = min(parita_sorted,
         nA = sum(1 for c in cols if row[c] >= 61)
         decade_counts[(nB, nM, nA)] += 1
 
-    decade_sorted  = sorted(decade_counts.items(),
-                            key=lambda x: x[1], reverse=True)
-    idx_mid_d      = len(decade_sorted) // 2
-    decade_target  = decade_sorted[idx_mid_d][0]
-    pct_decade     = round(decade_counts[decade_target]*100/n, 1)
+    decade_sorted = sorted(decade_counts.items(),
+                           key=lambda x: x[1], reverse=True)
+
+    # Mediana delle frequenze
+    freqs_d    = sorted([cnt for _, cnt in decade_sorted])
+    mediana_d  = freqs_d[len(freqs_d) // 2]
+    decade_target = min(decade_sorted,
+                        key=lambda x: abs(x[1] - mediana_d))[0]
+    pct_decade = round(decade_counts[decade_target]*100/n, 1)
 
     print(f"  [Struttura] Distribuzione decadi nella fascia "
           f"(B=1-30, M=31-60, A=61-90):")
@@ -194,9 +213,10 @@ n_pari_target = min(parita_sorted,
         'pct_decade': pct_decade,
     }
     print(f"  [Struttura] Vincolo applicato: "
-          f"{n_pari_target}p/{6-n_pari_target}d | "
+          f"{n_pari_target}p/{6-n_pari_target}d "
+          f"({pct_pari}%) | "
           f"B{decade_target[0]}M{decade_target[1]}"
-          f"A{decade_target[2]}")
+          f"A{decade_target[2]} ({pct_decade}%)")
     return vincoli
 
 
@@ -244,7 +264,7 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
               f"recente={r['freq_recente']:.4f}  "
               f"delta={r['delta']:+.4f}")
 
-    # Analisi struttura storica della fascia (parità + decade)
+    # Analisi struttura storica della fascia
     print(f"\n  [Struttura] Analisi parità+decade nella fascia...")
     vincoli = analizza_struttura_fascia(df_fascia)
 
