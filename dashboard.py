@@ -432,6 +432,18 @@ with tab3:
             st.info(f"Zona: **{w['zona_tipo']}** | "
                     f"Cicli: {w['cicli_analizzati']}")
 
+            # Vincolo parità se disponibile
+            n_p = w.get('vincolo_n_pari')
+            pct_p = w.get('vincolo_pct_pari')
+            if n_p is not None:
+                n_p = int(n_p)
+                st.success(
+                    f"🎲 Vincolo parità attivo: "
+                    f"**{n_p} pari / {6-n_p} dispari** | "
+                    f"Frequenza storica nella fascia: "
+                    f"**{pct_p:.1f}%**"
+                )
+
         st.divider()
         tail    = 500
         df_plot = df_est.tail(tail).copy()
