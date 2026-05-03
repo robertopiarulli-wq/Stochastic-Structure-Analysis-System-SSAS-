@@ -88,16 +88,17 @@ def calcola_decadi(numeri):
 
 def check_parita_decade(sestina, vincoli):
     """
-    Verifica solo il vincolo parità intermedia della fascia.
-    Il vincolo decade è disabilitato: nella fascia target alta
-    (360-390) le combinazioni di decade sono strutturalmente
-    sbilanciate verso A(61-90) per ragioni matematiche
-    e il filtro risulterebbe troppo restrittivo.
+    Verifica il vincolo parità esteso:
+    accetta sia n_pari_target che n_pari_target±1
+    per includere le distribuzioni adiacenti.
+    Es: se intermedia è 4p/2d → accetta anche 3p/3d
     """
     if vincoli is None:
         return True
     n_pari = sum(1 for n in sestina if n % 2 == 0)
-    return n_pari == vincoli['n_pari']
+    target = vincoli['n_pari']
+    # Accetta target e target-1 (es. 4p/2d e 3p/3d)
+    return n_pari in [target, target - 1]
 
 # ── Filtri a cascata ─────────────────────────────────────
 def check_overlap(sestina_set, storico_np):
