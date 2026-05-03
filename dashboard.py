@@ -433,16 +433,22 @@ with tab3:
                     f"Cicli: {w['cicli_analizzati']}")
 
             # Vincolo parità se disponibile
-            n_p   = w.get('vincolo_n_pari')
-            pct_p = w.get('vincolo_pct_pari')
+            n_p    = w.get('vincolo_n_pari')
+            pct_p  = w.get('vincolo_pct_pari')
+            logica = w.get('vincolo_logica', '')
             if n_p is not None and str(n_p) != 'nan':
                 try:
                     n_p   = int(float(n_p))
                     pct_p = float(pct_p)
+                    # Mostra logica estesa se disponibile
+                    if logica and str(logica) != 'nan':
+                        descr = f"**{logica}**"
+                    else:
+                        descr = (f"**{n_p}p/{6-n_p}d** + "
+                                 f"**{n_p-1}p/{6-(n_p-1)}d**")
                     st.success(
-                        f"🎲 Vincolo parità attivo: "
-                        f"**{n_p} pari / {6-n_p} dispari** | "
-                        f"Frequenza storica nella fascia: "
+                        f"🎲 Vincolo parità attivo: {descr} | "
+                        f"Frequenza storica fascia intermedia: "
                         f"**{pct_p:.1f}%**"
                     )
                 except Exception:
@@ -633,11 +639,19 @@ with tab4:
                 if vincolo_n_pari is not None:
                     st.divider()
                     st.write("🎲 **Vincolo parità**")
-                    st.write(
-                        f"**{vincolo_n_pari}p / "
-                        f"{6-vincolo_n_pari}d** "
-                        f"({vincolo_pct:.1f}%)"
-                    )
+                    _log = df_wyk_t.iloc[0].get(
+                        'vincolo_logica', '') \
+                        if not df_wyk_t.empty else ''
+                    if _log and str(_log) != 'nan':
+                        st.write(f"**{_log}**")
+                    else:
+                        st.write(
+                            f"**{vincolo_n_pari}p/"
+                            f"{6-vincolo_n_pari}d** + "
+                            f"**{vincolo_n_pari-1}p/"
+                            f"{6-(vincolo_n_pari-1)}d**"
+                        )
+                    st.write(f"({vincolo_pct:.1f}% nella fascia)")
 
             st.divider()
             lbl = ("con vincolo parità"
@@ -898,16 +912,21 @@ with tab5:
         )
 
         # Mostra vincolo parità se disponibile
-        _np_off = w_off.get('vincolo_n_pari')
-        _pp_off = w_off.get('vincolo_pct_pari')
+        _np_off  = w_off.get('vincolo_n_pari')
+        _pp_off  = w_off.get('vincolo_pct_pari')
+        _log_off = w_off.get('vincolo_logica', '')
         if _np_off is not None and str(_np_off) != 'nan':
             try:
                 _np_off = int(float(_np_off))
                 _pp_off = float(_pp_off)
+                if _log_off and str(_log_off) != 'nan':
+                    descr_off = f"**{_log_off}**"
+                else:
+                    descr_off = (f"**{_np_off}p/{6-_np_off}d** + "
+                                 f"**{_np_off-1}p/{6-(_np_off-1)}d**")
                 st.success(
-                    f"🎲 Vincolo parità: "
-                    f"**{_np_off}p/{6-_np_off}d** "
-                    f"({_pp_off:.1f}% nella fascia) — "
+                    f"🎲 Vincolo parità: {descr_off} | "
+                    f"Freq. intermedia fascia: **{_pp_off:.1f}%** | "
                     f"applicato automaticamente alle candidate"
                 )
             except Exception:
