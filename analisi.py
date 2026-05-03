@@ -112,7 +112,7 @@ wyckoff_id, stato, df_zone, df_cicli = esegui_wyckoff(
 # ── STEP 5: Compensazione + Generatore ───────────────────
 print("\n[5/5] Compensazione e generazione sestine...")
 
-pool_numeri = esegui_compensazione(
+pool_numeri, vincoli = esegui_compensazione(
     df_raw     = df,
     wyckoff_id = wyckoff_id,
     stato      = stato,
@@ -136,6 +136,7 @@ sestine = ricerca_su_pool(
     mappa_z       = mappa_z,
     fascia_min    = stato['fascia_min'],
     fascia_max    = stato['fascia_max'],
+    vincoli       = vincoli,
     n_campioni    = 3000000,
     max_sestine   = 5000
 )
