@@ -121,29 +121,15 @@ pool_numeri, vincoli = esegui_compensazione(
     client     = supabase
 )
 
-# Carica ultime 3 estrazioni → numeri da escludere
-print("  Caricamento ultime 3 estrazioni...")
-res_ult = supabase.table("estrazioni")\
-    .select("n1,n2,n3,n4,n5,n6")\
-    .order("data_estrazione", desc=True)\
-    .limit(3)\
-    .execute()
-numeri_esclusi = set()
-for row in res_ult.data:
-    for col in ['n1','n2','n3','n4','n5','n6']:
-        numeri_esclusi.add(row[col])
-print(f"  Numeri esclusi (ultime 3 estrazioni): "
-      f"{sorted(numeri_esclusi)}")
-
-# Carica strutture per filtri
+# Carica strutture per filtri (storico mantenuto per compatibilità)
 storico_np, figure_viste = carica_storico(supabase)
 triple_attive            = carica_triple_attive(
     supabase, n_estrazioni=50)
 mappa_z                  = carica_mappa_occupazione(supabase)
 
 # Genera sestine dal pool Wyckoff
-# Spazio totale stimato ~119.000 sestine
-# n_campioni=10M per coprire tutto lo spazio
+# Il filtro ritardo è già applicato in compensazione.py
+# Nessuna esclusione esplicita per ultime estrazioni
 sestine = ricerca_su_pool(
     pool            = pool_numeri,
     storico_np      = storico_np,
@@ -153,7 +139,7 @@ sestine = ricerca_su_pool(
     fascia_min      = stato['fascia_min'],
     fascia_max      = stato['fascia_max'],
     vincoli         = vincoli,
-    numeri_esclusi  = numeri_esclusi,
+    numeri_esclusi  = None,
     n_campioni      = 10000000,
     max_sestine     = 999999
 )
