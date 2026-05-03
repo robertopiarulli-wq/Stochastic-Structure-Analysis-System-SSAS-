@@ -261,69 +261,69 @@ def ricerca_su_pool(
     sestine_trovate = []
     sestine_set_viste = set()  # evita duplicati
     scarti = {
-        "no_sesto":      0,
-        "parita":        0,
-        "duplicata":     0,
+        "no_sesto":  0,
+        "parita":    0,
     }
 
     tentativi = 0
 
-    for _ in range(n_campioni):
-        if len(pool) < 5:
-            break
+    # Enumerazione sistematica: tutte le C(pool,5) × 31 target
+    print(f"  Enumerazione sistematica...")
+    print(f"  C({len(pool)},5) = "
+          f"{len(list(combinations(pool,5))):,} combinazioni × "
+          f"{fascia_max-fascia_min+1} target")
 
-        tentativi += 1
-
-        cinque = sorted(random.sample(pool, 5))
+    for cinque in combinations(pool, 5):
         somma5 = sum(cinque)
+        cinque_set = set(cinque)
 
-        target = random.randint(fascia_min, fascia_max)
-        sesto  = target - somma5
+        for target in range(fascia_min, fascia_max + 1):
+            tentativi += 1
+            sesto = target - somma5
 
-        if sesto < 1 or sesto > 90:
-            scarti["no_sesto"] += 1
-            continue
-        if sesto in set(cinque):
-            scarti["no_sesto"] += 1
-            continue
-        if numeri_esclusi and sesto in numeri_esclusi:
-            scarti["no_sesto"] += 1
-            continue
+            # Verifica validità del 6°
+            if sesto < 1 or sesto > 90:
+                scarti["no_sesto"] += 1
+                continue
+            if sesto in cinque_set:
+                scarti["no_sesto"] += 1
+                continue
+            if numeri_esclusi and sesto in numeri_esclusi:
+                scarti["no_sesto"] += 1
+                continue
 
-        sestina = tuple(sorted(cinque + [sesto]))
-        somma   = sum(sestina)
+            sestina = tuple(sorted(cinque + (sesto,)))
+            somma   = sum(sestina)
 
-        if not (fascia_min <= somma <= fascia_max):
-            scarti["no_sesto"] += 1
-            continue
+            if not (fascia_min <= somma <= fascia_max):
+                scarti["no_sesto"] += 1
+                continue
 
-        # Evita duplicati
-        if sestina in sestine_set_viste:
-            scarti["duplicata"] += 1
-            continue
+            # Evita duplicati
+            if sestina in sestine_set_viste:
+                continue
 
-        # FILTRO 0: Parità
-        if not check_parita_decade(sestina, vincoli):
-            scarti["parita"] += 1
-            continue
+            # FILTRO 0: Parità
+            if not check_parita_decade(sestina, vincoli):
+                scarti["parita"] += 1
+                continue
 
-        sestine_trovate.append(list(sestina))
-        sestine_set_viste.add(sestina)
+            sestine_trovate.append(list(sestina))
+            sestine_set_viste.add(sestina)
 
-        if len(sestine_trovate) % 5000 == 0:
-            print(f"  Trovate {len(sestine_trovate):,} "
-                  f"su {tentativi:,} tentativi...")
+        if len(sestine_trovate) % 5000 == 0 \
+                and len(sestine_trovate) > 0:
+            print(f"  Trovate {len(sestine_trovate):,}...")
 
-    print(f"\n  === Risultati Wyckoff ===")
-    print(f"  Tentativi:        {tentativi:,}")
-    print(f"  Sestine trovate:  {len(sestine_trovate):,}")
-    print(f"  Tasso successo:   "
-          f"{len(sestine_trovate)*100/max(tentativi,1):.4f}%")
+    print(f"\n  === Risultati Wyckoff (Enumerazione Sistematica) ===")
+    print(f"  Iterazioni totali: {tentativi:,}")
+    print(f"  Sestine trovate:   {len(sestine_trovate):,} "
+          f"(SPAZIO COMPLETO)")
     print(f"\n  Scarti per filtro:")
     tot = sum(scarti.values())
     for k, v in scarti.items():
         if v > 0:
-            print(f"    {k:15s}: {v:>10,} "
+            print(f"    {k:12s}: {v:>10,} "
                   f"({v*100/max(tot,1):.1f}%)")
 
     return sestine_trovate
