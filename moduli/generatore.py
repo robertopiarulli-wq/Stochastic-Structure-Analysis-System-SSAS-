@@ -234,96 +234,70 @@ def ricerca_su_pool(
     max_sestine    = 999999,
     seed           = 42
 ):
-    random.seed(seed)
-    np.random.seed(seed)
-
-    if len(pool) < 5:
-        print("  [Motore3-Wyckoff] Pool troppo piccolo, skip.")
-        return []
-
+    """
+    Enumerazione sistematica su C(universo, 6).
+    Tutti e 6 i numeri vengono dall'universo BASSA+MEDIA freq.
+    Nessun sesto calcolato come differenza.
+    Filtri: somma in fascia + parità + esclusione ultime 3.
+    """
     # Rimuovi dal pool i numeri esclusi
     if numeri_esclusi:
         pool = [n for n in pool if n not in numeri_esclusi]
-        print(f"\n  Pool dopo esclusione ultime 3 estrazioni: "
-              f"{sorted(pool)} ({len(pool)} numeri)")
 
-    print(f"\n  Avvio ricerca Wyckoff — spazio completo")
-    print(f"  Pool: {sorted(pool)}")
+    if len(pool) < 6:
+        print("  [Motore3] Universo troppo piccolo, skip.")
+        return []
+
+    universo = sorted(pool)
+    n_comb   = len(list(combinations(universo, 6)))
+
+    print(f"\n  Avvio enumerazione sistematica C(universo,6)")
+    print(f"  Universo: {universo}")
+    print(f"  C({len(universo)},6) = {n_comb:,} combinazioni")
     print(f"  Fascia somma: {fascia_min}-{fascia_max}")
-    print(f"  Limite sestine: nessuno (max={max_sestine:,})")
     if vincoli:
         print(f"  Vincolo parità: "
               f"{vincoli['n_pari']}p/{vincoli['n_disp']}d "
-              f"({vincoli['pct_pari']}% nella fascia)")
+              f"({vincoli['pct_pari']}%)")
     if numeri_esclusi:
         print(f"  Numeri esclusi: {sorted(numeri_esclusi)}")
 
     sestine_trovate = []
-    sestine_set_viste = set()  # evita duplicati
     scarti = {
-        "no_sesto":  0,
-        "parita":    0,
+        "somma":   0,
+        "parita":  0,
     }
-
     tentativi = 0
 
-    # Enumerazione sistematica: tutte le C(pool,5) × 31 target
-    print(f"  Enumerazione sistematica...")
-    print(f"  C({len(pool)},5) = "
-          f"{len(list(combinations(pool,5))):,} combinazioni × "
-          f"{fascia_max-fascia_min+1} target")
+    for sestina in combinations(universo, 6):
+        tentativi += 1
+        somma = sum(sestina)
 
-    for cinque in combinations(pool, 5):
-        somma5 = sum(cinque)
-        cinque_set = set(cinque)
+        # FILTRO 1: Somma in fascia Wyckoff
+        if not (fascia_min <= somma <= fascia_max):
+            scarti["somma"] += 1
+            continue
 
-        for target in range(fascia_min, fascia_max + 1):
-            tentativi += 1
-            sesto = target - somma5
+        # FILTRO 2: Parità intermedia della fascia
+        if not check_parita_decade(sestina, vincoli):
+            scarti["parita"] += 1
+            continue
 
-            # Verifica validità del 6°
-            if sesto < 1 or sesto > 90:
-                scarti["no_sesto"] += 1
-                continue
-            if sesto in cinque_set:
-                scarti["no_sesto"] += 1
-                continue
-            if numeri_esclusi and sesto in numeri_esclusi:
-                scarti["no_sesto"] += 1
-                continue
+        sestine_trovate.append(list(sestina))
 
-            sestina = tuple(sorted(cinque + (sesto,)))
-            somma   = sum(sestina)
+        if len(sestine_trovate) % 5000 == 0:
+            print(f"  Trovate {len(sestine_trovate):,} "
+                  f"su {tentativi:,} combinazioni...")
 
-            if not (fascia_min <= somma <= fascia_max):
-                scarti["no_sesto"] += 1
-                continue
-
-            # Evita duplicati
-            if sestina in sestine_set_viste:
-                continue
-
-            # FILTRO 0: Parità
-            if not check_parita_decade(sestina, vincoli):
-                scarti["parita"] += 1
-                continue
-
-            sestine_trovate.append(list(sestina))
-            sestine_set_viste.add(sestina)
-
-        if len(sestine_trovate) % 5000 == 0 \
-                and len(sestine_trovate) > 0:
-            print(f"  Trovate {len(sestine_trovate):,}...")
-
-    print(f"\n  === Risultati Wyckoff (Enumerazione Sistematica) ===")
-    print(f"  Iterazioni totali: {tentativi:,}")
-    print(f"  Sestine trovate:   {len(sestine_trovate):,} "
+    print(f"\n  === Risultati (Enumerazione C(universo,6)) ===")
+    print(f"  Combinazioni totali: {tentativi:,}")
+    print(f"  Sestine trovate:     {len(sestine_trovate):,} "
           f"(SPAZIO COMPLETO)")
     print(f"\n  Scarti per filtro:")
     tot = sum(scarti.values())
     for k, v in scarti.items():
         if v > 0:
-            print(f"    {k:12s}: {v:>10,} "
+            print(f"    {k:10s}: {v:>10,} "
                   f"({v*100/max(tot,1):.1f}%)")
 
     return sestine_trovate
