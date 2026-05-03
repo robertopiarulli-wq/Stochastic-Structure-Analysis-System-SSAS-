@@ -77,49 +77,64 @@ def calcola_frequenze_numeri(df_full, df_fascia,
 
     return pd.DataFrame(risultati)
 
-def seleziona_universo_tre_fasce(df_freq, n_fasce=30):
+def seleziona_universo_tre_fasce(df_freq, n_per_fascia=10):
     """
-    Divide i 90 numeri in 3 fasce di frequenza nella zona target:
-      ALTA freq:  top 30 più frequenti → già saturi, esclusi
-      MEDIA freq: posizioni 31-60 → candidati secondari
-      BASSA freq: posizioni 61-90 → candidati principali (compensazione)
+    Divide 1-90 in 3 fasce di VALORE:
+      BASSA valore:  1-30
+      MEDIA valore: 31-60
+      ALTA valore:  61-90
 
-    Universo primario = BASSA + MEDIA (60 numeri)
-    Tutti e 6 i numeri di ogni sestina vengono da questo universo.
-    Il sesto non viene più calcolato come differenza — tutti e 6
-    appartengono allo stesso criterio di compensazione.
+    Dentro ogni fascia di valore → prende i meno frequenti
+    nella zona target (compensazione).
 
-    Restituisce:
-      pool_bassa:  30 numeri meno frequenti (priorità massima)
-      pool_media:  30 numeri frequenza intermedia
-      universo:    60 numeri totali (BASSA + MEDIA)
+    n_per_fascia = quanti numeri prendere per fascia (default 10)
+    → universo totale = 30 numeri (10 per fascia)
+    → copre tutto il tabellone garantendo somme alte
     """
-    # Escludi numeri mai apparsi nella fascia
-    df = df_freq[df_freq['freq_storica'] > 0].copy()
-    df = df.sort_values('freq_storica', ascending=True)\
-           .reset_index(drop=True)
+    BANDE_VALORE = [
+        (1,  30, "BASSA"),
+        (31, 60, "MEDIA"),
+        (61, 90, "ALTA"),
+    ]
 
-    n_tot = len(df)
-    soglia_bassa = n_fasce        # primi 30 = meno frequenti
-    soglia_media = n_fasce * 2    # posizioni 31-60
+    pool_bassa = []
+    pool_media = []
+    pool_alta  = []
+    universo   = []
 
-    pool_bassa = df.iloc[:soglia_bassa]['numero'].tolist()
-    pool_media = df.iloc[soglia_bassa:soglia_media]['numero'].tolist()
-    pool_alta  = df.iloc[soglia_media:]['numero'].tolist()
+    print(f"  [Compensazione] Tre fasce di VALORE "
+          f"({n_per_fascia} meno freq per fascia):")
 
-    universo = sorted(pool_bassa + pool_media)
+    for vmin, vmax, label in BANDE_VALORE:
+        df_band = df_freq[
+            (df_freq['numero'] >= vmin) &
+            (df_freq['numero'] <= vmax) &
+            (df_freq['freq_storica'] > 0)
+        ].sort_values('freq_storica', ascending=True)
 
-    print(f"  [Compensazione] Tre fasce di frequenza nella zona:")
-    print(f"    BASSA freq (compensazione primaria): "
-          f"{sorted(pool_bassa)}")
-    print(f"    MEDIA freq (compensazione secondaria): "
-          f"{sorted(pool_media)}")
-    print(f"    ALTA freq  (esclusa - già satura): "
-          f"{sorted(pool_alta)}")
+        # Prendi i meno frequenti dentro questa fascia di valore
+        top = df_band.head(n_per_fascia)['numero'].tolist()
+
+        freq_media = df_band['freq_storica'].mean() \
+                     if not df_band.empty else 0
+        print(f"    {label:5s} [{vmin:2d}-{vmax:2d}] "
+              f"meno frequenti: {sorted(top)} "
+              f"(freq_media_fascia={freq_media:.4f})")
+
+        if label == "BASSA":
+            pool_bassa = top
+        elif label == "MEDIA":
+            pool_media = top
+        else:
+            pool_alta = top
+
+        universo.extend(top)
+
+    universo = sorted(universo)
     print(f"  [Compensazione] Universo sestine "
-          f"(BASSA+MEDIA): {len(universo)} numeri")
+          f"({len(universo)} numeri): {universo}")
 
-    return pool_bassa, pool_media, universo
+    return pool_bassa, pool_media, pool_alta, universo
 
 def analizza_struttura_fascia(df_fascia):
     """
@@ -244,16 +259,11 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
         df, df_fascia, df_cicli, fascia_min, fascia_max
     )
 
-    # Seleziona universo tre fasce
-    pool_bassa, pool_media, universo = \
-        seleziona_universo_tre_fasce(df_freq, n_fasce=30)
+    # Seleziona universo: meno frequenti per fascia di valore
+    pool_bassa, pool_media, pool_alta, universo = \
+        seleziona_universo_tre_fasce(df_freq, n_per_fascia=10)
 
-    # Per Supabase salviamo l'universo completo
-    # marcando bassa=priorità alta, media=priorità bassa
-    pool_numeri = universo  # tutti e 60
-
-    print(f"  [Compensazione] Universo ({len(universo)} numeri):")
-    print(f"    {sorted(universo)}")
+    pool_numeri = universo  # 30 numeri totali
 
     # Analisi struttura storica della fascia
     print(f"\n  [Struttura] Analisi parità+decade nella fascia...")
@@ -269,7 +279,7 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
             "freq_zona":   float(r['freq_storica']),
             "freq_attesa": float(r['freq_attesa']),
             "delta":       float(r['delta']),
-            "incluso":     True,   # BASSA = priorità
+            "incluso":     True,
         })
     for n in pool_media:
         r = df_freq[df_freq['numero']==n].iloc[0]
@@ -279,14 +289,23 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
             "freq_zona":   float(r['freq_storica']),
             "freq_attesa": float(r['freq_attesa']),
             "delta":       float(r['delta']),
-            "incluso":     False,  # MEDIA = secondaria
+            "incluso":     True,
+        })
+    for n in pool_alta:
+        r = df_freq[df_freq['numero']==n].iloc[0]
+        records.append({
+            "wyckoff_id":  wyckoff_id,
+            "numero":      n,
+            "freq_zona":   float(r['freq_storica']),
+            "freq_attesa": float(r['freq_attesa']),
+            "delta":       float(r['delta']),
+            "incluso":     True,
         })
     if records:
         client.table("pool_compensazione")\
             .insert(records).execute()
         print(f"  [Compensazione] Universo salvato su Supabase "
-              f"({len(pool_bassa)} BASSA + "
-              f"{len(pool_media)} MEDIA)")
+              f"({len(universo)} numeri, 10 per fascia di valore)")
 
     # Aggiorna wyckoff_stato con vincolo parità
     if vincoli:
