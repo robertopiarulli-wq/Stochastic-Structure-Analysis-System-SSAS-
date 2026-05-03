@@ -98,7 +98,7 @@ def check_parita_decade(sestina, vincoli):
     n_pari = sum(1 for n in sestina if n % 2 == 0)
     target = vincoli['n_pari']
     # A: accetta solo target
-return n_pari == target
+    return n_pari == target
 
 # ── Filtri a cascata ─────────────────────────────────────
 def check_overlap(sestina_set, storico_np):
