@@ -1,1237 +1,331 @@
 """
-SSAS - Dashboard Streamlit
-Analisi strutturale Superenalotto + Sistema Ridotto
+SSAS - Motore 2: Compensazione Numerica
+Data la fascia target da Wyckoff,
+analizza le estrazioni storiche IN quella fascia,
+scarta i numeri più frequenti (già saturi)
+e usa i meno frequenti come pool di compensazione.
 """
-import streamlit as st
-import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-import datetime
-import re
-from itertools import combinations
-from collections import Counter
-from supabase import create_client
+import pandas as pd
 
-st.set_page_config(
-    page_title="SSAS - Superenalotto Analysis",
-    page_icon="🎯",
-    layout="wide"
-)
+N_CICLI_FOCUS = 3
+POOL_SIZE     = 30
 
-@st.cache_resource
-def get_client():
-    return create_client(
-        st.secrets["URL_SUPABASE"],
-        st.secrets["KEY_SUPABASE"]
-    )
+def estrai_estrazioni_in_fascia(df, fascia_min, fascia_max):
+    """Estrazioni storiche con somma nella fascia target."""
+    cols = ['n1','n2','n3','n4','n5','n6']
+    if 'somma' not in df.columns:
+        df = df.copy()
+        df['somma'] = df[cols].sum(axis=1)
+    mask = ((df['somma'] >= fascia_min) &
+            (df['somma'] <= fascia_max))
+    return df[mask].copy()
 
-supabase = get_client()
-
-@st.cache_data(ttl=3600)
-def carica_costanti():
-    res = supabase.table("costanti_sistema").select("*").execute()
-    return pd.DataFrame(res.data)
-
-@st.cache_data(ttl=3600)
-def carica_mappa():
-    res = supabase.table("mappa_occupazione")\
-        .select("*").order("numero").execute()
-    return pd.DataFrame(res.data)
-
-@st.cache_data(ttl=600)
-def carica_estrazioni(limit=7304):
-    res = supabase.table("estrazioni").select("*")\
-        .order("data_estrazione", desc=False)\
-        .limit(limit).execute()
-    return pd.DataFrame(res.data)
-
-@st.cache_data(ttl=60)
-def carica_wyckoff_stato():
-    res = supabase.table("wyckoff_stato").select("*")\
-        .order("run_at", desc=True).limit(1).execute()
-    return pd.DataFrame(res.data)
-
-@st.cache_data(ttl=60)
-def carica_pool(wyckoff_id):
-    res = supabase.table("pool_compensazione").select("*")\
-        .eq("wyckoff_id", wyckoff_id)\
-        .eq("incluso", True).execute()
-    return pd.DataFrame(res.data)
-
-@st.cache_data(ttl=60)
-def carica_candidate_frequenze(run_id):
-    res = supabase.table("candidate_frequenze").select("*")\
-        .eq("run_id", run_id)\
-        .order("pct", desc=True).execute()
-    return pd.DataFrame(res.data)
-
-@st.cache_data(ttl=60)
-def carica_candidate(run_id):
-    res = supabase.table("combinazioni_candidate").select("*")\
-        .eq("run_id", run_id).limit(50000).execute()
-    return pd.DataFrame(res.data)
-
-@st.cache_data(ttl=60)
-def carica_run_ids():
-    res = supabase.table("candidate_frequenze")\
-        .select("run_id").execute()
-    df = pd.DataFrame(res.data)
-    if df.empty:
-        return []
-    return sorted(df['run_id'].unique().tolist(), reverse=True)
-
-def calcola_rsi(series, period=14):
-    delta    = series.diff()
-    gain     = delta.clip(lower=0)
-    loss     = -delta.clip(upper=0)
-    avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
-
-def calcola_bollinger(series, period=137, std_dev=2):
-    sma = series.rolling(window=period).mean()
-    std = series.rolling(window=period).std()
-    return sma + std_dev*std, sma, sma - std_dev*std
-
-# ── Covering design corretto su candidate ────────────────
-def genera_ridotto_da_candidate(candidate_list, garanzia=5):
+def calcola_frequenze_numeri(df_full, df_fascia,
+                              df_cicli, fascia_min, fascia_max):
     """
-    Logica corretta del sistema ridotto su sestine
-    pre-generate:
-
-    Trova il minimo sottoinsieme S delle candidate tale che:
-    per ogni sestina c NON in S, esiste almeno una sestina
-    s in S che condivide >= <garanzia> numeri con c.
-
-    Garanzia 5 = ogni sestina non giocata è "coperta"
-                 da una giocata che ha 5 numeri uguali
-    Garanzia 4 = ogni sestina non giocata è "coperta"
-                 da una giocata che ha 4 numeri uguali
-
-    NON calcola C(pool, garanzia) — evita esplosione
-    combinatoriale.
+    Per ogni numero 1-90:
+    - freq_storica: frequenza nella fascia su tutto lo storico
+    - freq_recente: frequenza nella fascia negli ultimi N cicli
+    - delta: freq_recente - freq_storica
+    
+    I numeri con freq_storica bassa sono i candidati:
+    compaiono poco in quella fascia → mancano all'appello
+    → per costruzione sono compatibili con la fascia
+      perché calcolati SU estrazioni in quella fascia
     """
-    n = len(candidate_list)
-    if n == 0:
-        return [], 0, []
-    if n <= 6:
-        pool = sorted(set(x for s in candidate_list for x in s))
-        return candidate_list, 0, pool
+    cols  = ['n1','n2','n3','n4','n5','n6']
+    n_tot = len(df_fascia)
 
-    # Precalcola overlap tra ogni coppia di sestine
-    # copre[i] = set di indici j che i copre
-    # (overlap >= garanzia)
-    sets = [set(s) for s in candidate_list]
-    copre = [set() for _ in range(n)]
+    # Ultimi N cicli da 137
+    if not df_cicli.empty:
+        idx_min       = int(df_cicli['start_idx'].min())
+        df_rec        = df_full[df_full.index >= idx_min].copy()
+        if 'somma' not in df_rec.columns:
+            df_rec['somma'] = df_rec[cols].sum(axis=1)
+        df_rec_fascia = estrai_estrazioni_in_fascia(
+            df_rec, fascia_min, fascia_max
+        )
+    else:
+        df_rec_fascia = df_fascia.tail(137 * N_CICLI_FOCUS)
 
-    for i in range(n):
-        for j in range(n):
-            if i != j:
-                if len(sets[i] & sets[j]) >= garanzia:
-                    copre[i].add(j)
+    n_rec = len(df_rec_fascia)
 
-    # Greedy: seleziona la sestina che copre
-    # più sestine non ancora coperte
-    selezionate_idx = []
-    non_coperti     = set(range(n))
-    punteggi        = {
-        i: len(copre[i] & non_coperti) for i in range(n)
-    }
+    print(f"  [Compensazione] Estrazioni in fascia (storico): "
+          f"{n_tot}")
+    print(f"  [Compensazione] Estrazioni in fascia (recenti): "
+          f"{n_rec}")
 
-    while non_coperti:
-        # Sestina con punteggio massimo
-        best = max(range(n),
-                   key=lambda i: punteggi.get(i, -1))
+    arr_tot = df_fascia[cols].values     if n_tot > 0 else None
+    arr_rec = df_rec_fascia[cols].values if n_rec > 0 else None
 
-        if punteggi.get(best, 0) == 0:
-            # Nessuna copre le restanti →
-            # aggiungile tutte
-            for j in list(non_coperti):
-                if j not in selezionate_idx:
-                    selezionate_idx.append(j)
-            break
+    risultati = []
+    for numero in range(1, 91):
+        freq_s = float(np.sum(arr_tot == numero)) / n_tot \
+                 if n_tot > 0 else 0.0
+        freq_r = float(np.sum(arr_rec == numero)) / n_rec \
+                 if n_rec > 0 else 0.0
+        delta  = freq_r - freq_s
 
-        selezionate_idx.append(best)
-        newly = copre[best] & non_coperti
-        non_coperti -= newly
-        non_coperti.discard(best)
-        punteggi[best] = -1  # escludi
-
-        # Aggiorna punteggi
-        for i in non_coperti:
-            if punteggi.get(i, -1) >= 0:
-                punteggi[i] = len(copre[i] & non_coperti)
-
-    sistema     = [candidate_list[i] for i in selezionate_idx]
-    pool_out    = sorted(set(x for s in sistema for x in s))
-    efficienza  = round(
-        (1 - len(sistema)/n) * 100, 1
-    ) if n > 0 else 0
-
-    return sistema, efficienza, pool_out
-
-# ── Sistema Ridotto manuale (C(N,6)) ─────────────────────
-def genera_sistema_ridotto(numeri, garanzia=5):
-    """
-    Sistema ridotto classico su N numeri inseriti
-    manualmente. Trova minimo sottoinsieme di C(N,6)
-    tale che ogni combinazione di <garanzia> numeri
-    tra gli N sia coperta da almeno una sestina.
-    """
-    numeri = sorted(numeri)
-    if len(numeri) < 6:
-        return [], 0
-
-    tutti_target  = list(combinations(numeri, garanzia))
-    tutte_sestine = list(combinations(numeri, 6))
-    target_idx    = {t: i for i, t in enumerate(tutti_target)}
-
-    sestina_to_targets = {}
-    target_to_sestine  = [[] for _ in range(len(tutti_target))]
-
-    for s in tutte_sestine:
-        idxs = []
-        for t in combinations(s, garanzia):
-            if t in target_idx:
-                i = target_idx[t]
-                idxs.append(i)
-                target_to_sestine[i].append(s)
-        sestina_to_targets[s] = idxs
-
-    selezionate = []
-    non_coperti = set(range(len(tutti_target)))
-    punteggi    = {
-        s: len(set(sestina_to_targets[s]) & non_coperti)
-        for s in tutte_sestine
-    }
-
-    while non_coperti:
-        if not punteggi:
-            break
-        best = max(punteggi, key=lambda s: punteggi[s])
-        if punteggi[best] == 0:
-            break
-        selezionate.append(best)
-        nuovi = set(sestina_to_targets[best]) & non_coperti
-        non_coperti -= nuovi
-        punteggi[best] = -1
-        da_aggiornare = set()
-        for idx in nuovi:
-            for s in target_to_sestine[idx]:
-                da_aggiornare.add(s)
-        for s in da_aggiornare:
-            if punteggi.get(s, -1) >= 0:
-                punteggi[s] = len(
-                    set(sestina_to_targets[s]) & non_coperti
-                )
-
-    efficienza = round(
-        (1 - len(selezionate)/len(tutte_sestine)) * 100, 1
-    ) if tutte_sestine else 0
-    return selezionate, efficienza
-
-def mostra_sistema(sistema, garanzia, key_prefix):
-    righe = []
-    for i, s in enumerate(sistema):
-        righe.append({
-            "#": i+1,
-            "N1": s[0], "N2": s[1], "N3": s[2],
-            "N4": s[3], "N5": s[4], "N6": s[5],
-            "Somma": sum(s), "Range": s[-1]-s[0],
+        risultati.append({
+            'numero':       numero,
+            'freq_storica': round(freq_s, 6),
+            'freq_recente': round(freq_r, 6),
+            'freq_attesa':  round(6.0/90.0, 6),
+            'delta':        round(delta, 6),
         })
-    df_r = pd.DataFrame(righe)
-    st.dataframe(df_r, hide_index=True, use_container_width=True)
-    st.download_button(
-        "⬇️ Scarica sistema (CSV)",
-        df_r.to_csv(index=False),
-        f"ridotto_{key_prefix}_g{garanzia}.csv",
-        "text/csv",
-        key=f"dl_{key_prefix}"
-    )
 
-# ── Header ────────────────────────────────────────────────
-st.title("🎯 SSAS — Stochastic Structure Analysis System")
-st.caption("Analisi strutturale Superenalotto | Wyckoff + Parisi")
+    return pd.DataFrame(risultati)
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 Costanti", "🗺️ Mappa 1-90", "📈 Wyckoff",
-    "🎯 Candidate", "🔧 Officina", "🔢 Estrazioni"
-])
+def seleziona_universo_tre_fasce(df_freq, n_per_fascia=10):
+    """
+    Divide 1-90 in 3 fasce di VALORE:
+      BASSA valore:  1-30
+      MEDIA valore: 31-60
+      ALTA valore:  61-90
 
-# ════════════════════════════════════════════════════════
-# TAB 1 — COSTANTI
-# ════════════════════════════════════════════════════════
-with tab1:
-    st.subheader("Costanti Strutturali del Sistema")
-    df_cost = carica_costanti()
-    if not df_cost.empty:
-        c1, c2, c3, c4 = st.columns(4)
-        for col, nome, label in [
-            (c1, 'spacing_ratio', 'Spacing Ratio'),
-            (c2, 'somma',        'Somma Media'),
-            (c3, 'cv_gap',       'CV Gap'),
-            (c4, 'entropia_gap', 'Entropia Gap'),
-        ]:
-            r = df_cost[df_cost['nome']==nome]
-            if not r.empty:
-                r = r.iloc[0]
-                col.metric(label, f"{r['valore_medio']:.4f}",
-                           delta=f"±{r['std_dev']:.4f}",
-                           delta_color="off")
-        st.divider()
-        rows = []
-        for _, r in df_cost.iterrows():
-            rows.append({
-                "Parametro": r['nome'],
-                "Media":  round(r['valore_medio'], 4),
-                "Std":    round(r['std_dev'], 4),
-                "P5":     round(r['percentile_5'], 4),
-                "P95":    round(r['percentile_95'], 4),
-                "Sigma":  round(r['sigma_da_random'], 3)
-                          if r['sigma_da_random'] else "—",
-            })
-        st.dataframe(pd.DataFrame(rows), hide_index=True,
-                     use_container_width=True)
+    Dentro ogni fascia di valore → prende i meno frequenti
+    nella zona target (compensazione).
 
-        st.subheader("Spacing Ratio vs sistemi fisici")
-        sr = df_cost[df_cost['nome']=='spacing_ratio']
-        if not sr.empty:
-            v = float(sr.iloc[0]['valore_medio'])
-            s = float(sr.iloc[0]['std_dev'])
+    n_per_fascia = quanti numeri prendere per fascia (default 10)
+    → universo totale = 30 numeri (10 per fascia)
+    → copre tutto il tabellone garantendo somme alte
+    """
+    BANDE_VALORE = [
+        (1,  30, "BASSA"),
+        (31, 60, "MEDIA"),
+        (61, 90, "ALTA"),
+    ]
 
-            fig = go.Figure()
-            # Traccia fittizia per dare range all'asse x
-            fig.add_trace(go.Scatter(
-                x=[0.20, 0.70], y=[0.5, 0.5],
-                mode='lines',
-                line=dict(color='rgba(0,0,0,0)'),
-                showlegend=False
-            ))
-            fig.add_vline(x=0.386, line_dash="dash",
-                          line_color="orange", line_width=2,
-                          annotation_text="Poisson 0.386",
-                          annotation_position="top right",
-                          annotation_font_color="orange")
-            fig.add_vline(x=0.536, line_dash="dash",
-                          line_color="lime", line_width=2,
-                          annotation_text="GOE 0.536",
-                          annotation_position="top right",
-                          annotation_font_color="lime")
-            fig.add_vline(x=v, line_color="red", line_width=3,
-                          annotation_text=f"Superenalotto {v:.4f}",
-                          annotation_position="top left",
-                          annotation_font_color="red")
-            fig.add_vrect(x0=v-s, x1=v+s,
-                          fillcolor="red", opacity=0.15,
-                          annotation_text=f"±σ",
-                          annotation_position="top left")
-            fig.update_layout(
-                template="plotly_dark",
-                height=220,
-                xaxis=dict(
-                    range=[0.20, 0.70],
-                    title="Spacing Ratio",
-                    showgrid=True,
-                    gridcolor="rgba(255,255,255,0.1)"
-                ),
-                yaxis=dict(visible=False),
-                margin=dict(l=20, r=20, t=40, b=40)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "**Cos'è lo Spacing Ratio?** "
-                "Misura come sono distribuiti i gap tra i 6 "
-                "numeri di ogni sestina. "
-                "**Poisson (0.386)** = numeri estratti "
-                "in modo completamente casuale, "
-                "gap distribuiti esponenzialmente. "
-                "**GOE (0.536)** = sistemi quantistici con "
-                "repulsione tra livelli energetici "
-                "(governa atomi, neutroni, mercati finanziari). "
-                f"**Superenalotto ({v:.4f})** si posiziona "
-                "tra i due: né puro caos né struttura forte. "
-                "Sigma vicino a zero conferma: "
-                "il sistema è essenzialmente random."
-            )
+    pool_bassa = []
+    pool_media = []
+    pool_alta  = []
+    universo   = []
 
-# ════════════════════════════════════════════════════════
-# TAB 2 — MAPPA
-# ════════════════════════════════════════════════════════
-with tab2:
-    st.subheader("Mappa Occupazione 1-90")
-    df_mappa = carica_mappa()
-    if not df_mappa.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("**Top 10 più frequenti**")
-            st.dataframe(
-                df_mappa.nlargest(10, 'freq_assoluta')[
-                    ['numero','freq_assoluta',
-                     'freq_relativa','z_score']],
-                hide_index=True, use_container_width=True)
-        with c2:
-            st.write("**Top 10 più ritardatari**")
-            st.dataframe(
-                df_mappa.nlargest(10, 'ritardo_attuale')[
-                    ['numero','ritardo_attuale',
-                     'ritardo_medio','ultimo_estratto']],
-                hide_index=True, use_container_width=True)
+    print(f"  [Compensazione] Tre fasce di VALORE "
+          f"({n_per_fascia} meno freq per fascia):")
 
-        st.divider()
-        st.subheader("Heatmap Z-score")
-        z_vals = df_mappa['z_score'].values
-        numeri = df_mappa['numero'].values
-        grid_z = np.zeros((9, 10))
-        grid_n = np.zeros((9, 10), dtype=int)
-        for n, z in zip(numeri, z_vals):
-            r = (n-1) // 10
-            c = (n-1) % 10
-            grid_z[r][c] = z
-            grid_n[r][c] = n
-        fig = go.Figure(data=go.Heatmap(
-            z=grid_z, text=grid_n, texttemplate="%{text}",
-            colorscale="RdBu_r", zmid=0,
-            colorbar=dict(title="Z-score")))
-        fig.update_layout(template="plotly_dark", height=320,
-                          margin=dict(l=20,r=20,t=20,b=20),
-                          xaxis_showticklabels=False,
-                          yaxis_showticklabels=False)
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("Rosso=sopra atteso | Blu=sotto atteso")
+    for vmin, vmax, label in BANDE_VALORE:
+        df_band = df_freq[
+            (df_freq['numero'] >= vmin) &
+            (df_freq['numero'] <= vmax) &
+            (df_freq['freq_storica'] > 0)
+        ].sort_values('freq_storica', ascending=True)
 
-# ════════════════════════════════════════════════════════
-# TAB 3 — WYCKOFF
-# ════════════════════════════════════════════════════════
-with tab3:
-    st.subheader("Analisi Wyckoff — Serie Storica Somme")
-    df_est = carica_estrazioni()
-    df_wyk = carica_wyckoff_stato()
+        # Prendi i meno frequenti dentro questa fascia di valore
+        top = df_band.head(n_per_fascia)['numero'].tolist()
 
-    if not df_est.empty:
-        cols = ['n1','n2','n3','n4','n5','n6']
-        df_est['somma'] = df_est[cols].sum(axis=1)
-        df_est['data_estrazione'] = pd.to_datetime(
-            df_est['data_estrazione'])
-        df_est = df_est.sort_values('data_estrazione')\
-                       .reset_index(drop=True)
-        somme = df_est['somma']
-        bb_u, bb_m, bb_l = calcola_bollinger(somme, 137)
-        rsi = calcola_rsi(somme, 14)
+        freq_media = df_band['freq_storica'].mean() \
+                     if not df_band.empty else 0
+        print(f"    {label:5s} [{vmin:2d}-{vmax:2d}] "
+              f"meno frequenti: {sorted(top)} "
+              f"(freq_media_fascia={freq_media:.4f})")
 
-        if not df_wyk.empty:
-            w = df_wyk.iloc[0]
-            c1,c2,c3,c4,c5 = st.columns(5)
-            c1.metric("Somma attuale", int(w['somma_ultima']))
-            c2.metric("Trend", w['trend'].upper())
-            c3.metric("RSI", f"{w['rsi_attuale']:.1f}")
-            c4.metric("ADX", f"{w['adx_attuale']:.1f}")
-            c5.metric("Fascia target",
-                      f"{int(w['fascia_min'])}-{int(w['fascia_max'])}")
-            st.info(f"Zona: **{w['zona_tipo']}** | "
-                    f"Cicli: {w['cicli_analizzati']}")
-
-            # Vincolo parità se disponibile
-            n_p    = w.get('vincolo_n_pari')
-            pct_p  = w.get('vincolo_pct_pari')
-            logica = w.get('vincolo_logica', '')
-            if n_p is not None and str(n_p) != 'nan':
-                try:
-                    n_p   = int(float(n_p))
-                    pct_p = float(pct_p)
-                    # Mostra logica estesa se disponibile
-                    if logica and str(logica) != 'nan':
-                        descr = f"**{logica}**"
-                    else:
-                        descr = (f"**{n_p}p/{6-n_p}d** + "
-                                 f"**{n_p-1}p/{6-(n_p-1)}d**")
-                    st.success(
-                        f"🎲 Vincolo parità attivo: {descr} | "
-                        f"Frequenza storica fascia intermedia: "
-                        f"**{pct_p:.1f}%**"
-                    )
-                except Exception:
-                    pass
-
-        st.divider()
-        tail    = 500
-        df_plot = df_est.tail(tail).copy()
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=df_plot['data_estrazione'], y=df_plot['somma'],
-            mode='lines', name='Somma',
-            line=dict(color='white', width=1)))
-        fig.add_trace(go.Scatter(
-            x=df_plot['data_estrazione'], y=bb_u.tail(tail),
-            mode='lines', name='BB Upper(137)',
-            line=dict(color='red', dash='dash', width=1)))
-        fig.add_trace(go.Scatter(
-            x=df_plot['data_estrazione'], y=bb_m.tail(tail),
-            mode='lines', name='BB Media(137)',
-            line=dict(color='yellow', dash='dot', width=1)))
-        fig.add_trace(go.Scatter(
-            x=df_plot['data_estrazione'], y=bb_l.tail(tail),
-            mode='lines', name='BB Lower(137)',
-            line=dict(color='blue', dash='dash', width=1),
-            fill='tonexty', fillcolor='rgba(0,0,255,0.05)'))
-        if not df_wyk.empty:
-            fig.add_hline(y=w['fascia_min'], line_color="gold",
-                          line_dash="dash",
-                          annotation_text="Target min")
-            fig.add_hline(y=w['fascia_max'], line_color="gold",
-                          line_dash="dash",
-                          annotation_text="Target max")
-        fig.update_layout(template="plotly_dark", height=350,
-                          margin=dict(l=20,r=20,t=20,b=20),
-                          legend=dict(orientation="h", y=-0.15))
-        st.plotly_chart(fig, use_container_width=True)
-
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(
-            x=df_plot['data_estrazione'], y=rsi.tail(tail),
-            mode='lines', name='RSI(14)',
-            line=dict(color='purple', width=1.5)))
-        fig2.add_hline(y=70, line_color="red",
-                       line_dash="dash",
-                       annotation_text="Iper-comprato 70")
-        fig2.add_hline(y=30, line_color="blue",
-                       line_dash="dash",
-                       annotation_text="Iper-venduto 30")
-        fig2.add_hrect(y0=30, y1=70,
-                       fillcolor="grey", opacity=0.05)
-        fig2.update_layout(template="plotly_dark", height=200,
-                           margin=dict(l=20,r=20,t=10,b=20))
-        st.plotly_chart(fig2, use_container_width=True)
-
-        st.subheader("Distribuzione storica somme")
-        fig3 = px.histogram(df_est, x='somma', nbins=80,
-                            color_discrete_sequence=['#636EFA'])
-        if not df_wyk.empty:
-            fig3.add_vline(x=w['somma_ultima'],
-                           line_color="white",
-                           annotation_text="Oggi")
-            fig3.add_vrect(x0=w['fascia_min'],
-                           x1=w['fascia_max'],
-                           fillcolor="gold", opacity=0.15,
-                           annotation_text="Target")
-        fig3.update_layout(template="plotly_dark", height=280,
-                           margin=dict(l=20,r=20,t=20,b=20))
-        st.plotly_chart(fig3, use_container_width=True)
-
-# ════════════════════════════════════════════════════════
-# TAB 4 — CANDIDATE
-# ════════════════════════════════════════════════════════
-with tab4:
-    st.subheader("🎯 Sestine Candidate Wyckoff")
-    run_ids = carica_run_ids()
-
-    if not run_ids:
-        st.warning("Nessun run disponibile.")
-    else:
-        run_labels = {
-            r: datetime.datetime.fromtimestamp(r)\
-               .strftime("%d/%m/%Y %H:%M:%S")
-            for r in run_ids
-        }
-        run_sel = st.selectbox(
-            "Seleziona run:", options=run_ids,
-            format_func=lambda x: run_labels[x])
-        df_freq = carica_candidate_frequenze(run_sel)
-        df_cand = carica_candidate(run_sel)
-
-        if df_freq.empty:
-            st.warning("Frequenze non disponibili.")
+        if label == "BASSA":
+            pool_bassa = top
+        elif label == "MEDIA":
+            pool_media = top
         else:
-            # ── Carica vincolo parità dal DB ─────────────────
-            df_wyk_t = carica_wyckoff_stato()
-            vincolo_n_pari = None
-            vincolo_pct    = None
-            if not df_wyk_t.empty:
-                w_t = df_wyk_t.iloc[0]
-                _np = w_t.get('vincolo_n_pari')
-                _pp = w_t.get('vincolo_pct_pari')
-                if _np is not None and str(_np) != 'nan':
-                    try:
-                        vincolo_n_pari = int(float(_np))
-                        vincolo_pct    = float(_pp)
-                    except Exception:
-                        pass
+            pool_alta = top
 
-            # ── Toggle filtro parità ──────────────────────────
-            cols_n = ['n1','n2','n3','n4','n5','n6']
-            if vincolo_n_pari is not None:
-                usa_parita = st.checkbox(
-                    f"🎲 Filtra per vincolo parità: "
-                    f"**{vincolo_n_pari}p/{6-vincolo_n_pari}d** "
-                    f"({vincolo_pct:.1f}% nella fascia storica)",
-                    value=True,
-                    key="chk_parita"
-                )
-                if usa_parita:
-                    mask_p = df_cand[cols_n].apply(
-                        lambda r: sum(1 for v in r if v % 2 == 0)
-                        == vincolo_n_pari, axis=1
-                    )
-                    df_cand_use = df_cand[mask_p].copy()
-                    st.info(
-                        f"**{len(df_cand_use):,}** sestine "
-                        f"con vincolo parità | "
-                        f"**{len(df_cand):,}** totali nel run"
-                    )
-                else:
-                    df_cand_use = df_cand.copy()
-                    st.info(f"**{len(df_cand_use):,}** sestine | "
-                            f"Run del {run_labels[run_sel]}")
-            else:
-                df_cand_use = df_cand.copy()
-                st.info(f"**{len(df_cand_use):,}** sestine | "
-                        f"Run del {run_labels[run_sel]}")
+        universo.extend(top)
 
-            st.subheader("Frequenza numeri nelle candidate")
-            df_fs = df_freq.sort_values('numero')
-            col_colors = df_fs['pct'].apply(
-                lambda p: '#ff4444' if p >= 15
-                else '#ffaa00' if p >= 8 else '#44ff44')
-            fig = go.Figure(go.Bar(
-                x=df_fs['numero'], y=df_fs['pct'],
-                marker_color=col_colors))
-            fig.add_hline(y=15, line_dash="dash",
-                          line_color="red",
-                          annotation_text="ALTA ≥15%")
-            fig.add_hline(y=8, line_dash="dash",
-                          line_color="orange",
-                          annotation_text="MEDIA ≥8%")
-            fig.update_layout(template="plotly_dark",
-                              height=320,
-                              margin=dict(l=20,r=20,t=20,b=20),
-                              xaxis_title="Numero",
-                              yaxis_title="% presenze",
-                              xaxis=dict(dtick=5))
-            st.plotly_chart(fig, use_container_width=True)
+    universo = sorted(universo)
+    print(f"  [Compensazione] Universo sestine "
+          f"({len(universo)} numeri): {universo}")
 
-            c1, c2, c3 = st.columns(3)
-            alta  = df_freq[df_freq['pct'] >= 15]\
-                .sort_values('pct', ascending=False)
-            media = df_freq[(df_freq['pct'] >= 8) &
-                            (df_freq['pct'] < 15)]\
-                .sort_values('pct', ascending=False)
-            with c1:
-                st.write("🔴 **ALTA** (≥15%)")
-                for _, r in alta.iterrows():
-                    st.write(f"**N.{int(r['numero']):2d}** → "
-                             f"{r['pct']:.1f}%")
-            with c2:
-                st.write("🟡 **MEDIA** (8-15%)")
-                for _, r in media.iterrows():
-                    st.write(f"**N.{int(r['numero']):2d}** → "
-                             f"{r['pct']:.1f}%")
-            with c3:
-                st.write("🟢 **Pool Wyckoff attivo**")
-                if not df_wyk_t.empty:
-                    pool_df = carica_pool(
-                        int(df_wyk_t.iloc[0]['id']))
-                    if not pool_df.empty:
-                        nums = sorted(pool_df['numero'].tolist())
-                        for i in range(0, len(nums), 5):
-                            st.write(" ".join(
-                                f"**{n}**" for n in nums[i:i+5]))
-                if vincolo_n_pari is not None:
-                    st.divider()
-                    st.write("🎲 **Vincolo parità**")
-                    _log = df_wyk_t.iloc[0].get(
-                        'vincolo_logica', '') \
-                        if not df_wyk_t.empty else ''
-                    if _log and str(_log) != 'nan':
-                        st.write(f"**{_log}**")
-                    else:
-                        st.write(
-                            f"**{vincolo_n_pari}p/"
-                            f"{6-vincolo_n_pari}d** + "
-                            f"**{vincolo_n_pari-1}p/"
-                            f"{6-(vincolo_n_pari-1)}d**"
-                        )
-                    st.write(f"({vincolo_pct:.1f}% nella fascia)")
+    return pool_bassa, pool_media, pool_alta, universo
 
-            st.divider()
-            lbl = ("con vincolo parità"
-                   if vincolo_n_pari is not None
-                   and st.session_state.get("chk_parita", True)
-                   else "totali")
-            st.subheader(
-                f"Prime 50 sestine candidate {lbl} "
-                f"({len(df_cand_use):,})"
-            )
-            if not df_cand_use.empty:
-                df_show = df_cand_use.head(50)[cols_n].copy()
-                df_show.columns = ['N1','N2','N3','N4','N5','N6']
-                df_show['Somma'] = df_show.sum(axis=1)
-                df_show['Range'] = df_show['N6'] - df_show['N1']
-                df_show.insert(0, '#', range(1, len(df_show)+1))
-                st.dataframe(df_show, hide_index=True,
-                             use_container_width=True)
-                st.download_button(
-                    "⬇️ Scarica candidate filtrate (CSV)",
-                    df_cand_use[cols_n].to_csv(index=False),
-                    f"candidate_parita_{run_sel}.csv",
-                    "text/csv",
-                    key="dl_cand_parita"
-                )
+def analizza_struttura_fascia(df_fascia):
+    """
+    Analizza le estrazioni storiche nella fascia target.
+    Trova la distribuzione INTERMEDIA di:
+    - parità (n. numeri pari per sestina)
+    - decadi B=1-30, M=31-60, A=61-90
 
-            # ── SEZIONE B: ANALISI PROSSIMITÀ ───────────────
-            st.divider()
-            st.subheader("🔍 Analisi Prossimità")
-            st.caption(
-                "Analisi sulle candidate "
-                + ("con vincolo parità attivo."
-                   if vincolo_n_pari is not None
-                   and st.session_state.get("chk_parita", True)
-                   else "totali.")
-            )
+    LOGICA INTERMEDIA CORRETTA:
+    Non prende la posizione centrale della lista
+    ma il valore con frequenza più vicina alla MEDIANA
+    delle frequenze → esclude sia i dominanti
+    sia i rarissimi, prende il centro della distribuzione.
+    """
+    from collections import Counter
+    cols = ['n1','n2','n3','n4','n5','n6']
+    n    = len(df_fascia)
+    if n == 0:
+        return None
 
-            with st.form("form_prossimita"):
-                inp_prox = st.text_input(
-                    "I tuoi 6 numeri (es: 7 22 35 48 63 80):",
-                    placeholder="7 22 35 48 63 80",
-                    key="inp_prox"
-                )
-                submitted_prox = st.form_submit_button(
-                    "🔍 Analizza Prossimità", type="primary"
-                )
+    # ── Parità ───────────────────────────────────────────
+    parita_counts_raw = Counter()
+    for _, row in df_fascia.iterrows():
+        n_pari = sum(1 for c in cols if row[c] % 2 == 0)
+        parita_counts_raw[n_pari] += 1
 
-            if submitted_prox:
-                nums_prox = sorted(set(
-                    int(n) for n in re.findall(r'\d+', inp_prox)
-                    if 1 <= int(n) <= 90
-                ))
-                if len(nums_prox) != 6:
-                    st.error("Inserisci esattamente 6 numeri.")
-                elif df_cand_use.empty:
-                    st.error("Nessuna candidata caricata.")
-                else:
-                    set_prox  = set(nums_prox)
-                    risultati = []
-                    for _, row in df_cand_use.iterrows():
-                        s    = tuple(sorted([
-                            row['n1'], row['n2'], row['n3'],
-                            row['n4'], row['n5'], row['n6']
-                        ]))
-                        ovlp = len(set_prox & set(s))
-                        if ovlp >= 3:
-                            risultati.append({
-                                'overlap': ovlp,
-                                'N1': s[0], 'N2': s[1],
-                                'N3': s[2], 'N4': s[3],
-                                'N5': s[4], 'N6': s[5],
-                                'Somma': sum(s),
-                            })
+    # Mantieni solo distribuzioni centrali: 2p/4d, 3p/3d, 4p/2d
+    # Escludi gli estremi: 0p/6d, 1p/5d, 5p/1d, 6p/0d
+    parita_counts = {k: v for k, v in parita_counts_raw.items()
+                     if k in [2, 3, 4]}
+    if not parita_counts:
+        parita_counts = dict(parita_counts_raw)
 
-                    n3 = sum(1 for r in risultati if r['overlap']==3)
-                    n4 = sum(1 for r in risultati if r['overlap']==4)
-                    n5 = sum(1 for r in risultati if r['overlap']==5)
-                    n6 = sum(1 for r in risultati if r['overlap']==6)
+    parita_sorted = sorted(parita_counts.items(),
+                           key=lambda x: x[1], reverse=True)
 
-                    st.info(
-                        f"La tua sestina: **{nums_prox}** | "
-                        f"Somma: **{sum(nums_prox)}** | "
-                        f"Analizzate: **{len(df_cand_use):,}**"
-                    )
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("5 in comune", n5,
-                              delta="vicinissime"
-                              if n5 > 0 else None)
-                    c2.metric("4 in comune", n4)
-                    c3.metric("3 in comune", n3)
-                    c4.metric("Esatta (6/6)", n6,
-                              delta="🎯 presente!"
-                              if n6 > 0 else None)
+    # Mediana delle frequenze tra i 3 valori centrali
+    freqs_p       = sorted([cnt for _, cnt in parita_sorted])
+    mediana_p     = freqs_p[len(freqs_p) // 2]
+    n_pari_target = min(parita_sorted,
+                        key=lambda x: abs(x[1] - mediana_p))[0]
+    pct_pari      = round(parita_counts_raw[n_pari_target]*100/n, 1)
 
-                    if risultati:
-                        df_prox = pd.DataFrame(risultati)\
-                            .sort_values('overlap', ascending=False)
+    print(f"  [Struttura] Distribuzione parità (solo 2p-4p):")
+    for np_ in sorted(parita_counts_raw.keys()):
+        cnt    = parita_counts_raw[np_]
+        esclusa = " [esclusa]" if np_ not in [2, 3, 4] else ""
+        marker  = " ← INTERMEDIA" if np_ == n_pari_target else ""
+        print(f"    {np_}p/{6-np_}d: "
+              f"{cnt} ({cnt*100/n:.1f}%){esclusa}{marker}")
 
-                        def evidenzia(row):
-                            celle = []
-                            for col in ['N1','N2','N3',
-                                        'N4','N5','N6']:
-                                n = row[col]
-                                celle.append(
-                                    f"**{n}**"
-                                    if n in set_prox
-                                    else str(n)
-                                )
-                            return ' - '.join(celle)
+    # ── Decadi B=1-30, M=31-60, A=61-90 ─────────────────
+    decade_counts = Counter()
+    for _, row in df_fascia.iterrows():
+        nB = sum(1 for c in cols if row[c] <= 30)
+        nM = sum(1 for c in cols if 31 <= row[c] <= 60)
+        nA = sum(1 for c in cols if row[c] >= 61)
+        decade_counts[(nB, nM, nA)] += 1
 
-                        df_prox['Numeri'] = df_prox.apply(
-                            evidenzia, axis=1)
-                        df_prox.insert(0, '#',
-                                       range(1, len(df_prox)+1))
-                        st.subheader(
-                            f"{len(df_prox)} candidate "
-                            f"con ≥3 in comune"
-                        )
-                        st.dataframe(
-                            df_prox[['#','overlap',
-                                     'Numeri','Somma']]\
-                                .rename(columns={
-                                    'overlap': 'In comune'}),
-                            hide_index=True,
-                            use_container_width=True
-                        )
-                    else:
-                        st.warning(
-                            "Nessuna candidata condivide "
-                            "3+ numeri con la tua sestina."
-                        )
+    decade_sorted = sorted(decade_counts.items(),
+                           key=lambda x: x[1], reverse=True)
 
-            # ── SEZIONE C: VERIFICA ESTRAZIONE ──────────────
-            st.divider()
-            st.subheader("🏆 Verifica Estrazione")
-            st.caption(
-                "Analisi sulle candidate "
-                + ("con vincolo parità attivo."
-                   if vincolo_n_pari is not None
-                   and st.session_state.get("chk_parita", True)
-                   else "totali.")
-            )
+    # Mediana delle frequenze
+    freqs_d    = sorted([cnt for _, cnt in decade_sorted])
+    mediana_d  = freqs_d[len(freqs_d) // 2]
+    decade_target = min(decade_sorted,
+                        key=lambda x: abs(x[1] - mediana_d))[0]
+    pct_decade = round(decade_counts[decade_target]*100/n, 1)
 
-            with st.form("form_verifica"):
-                inp_verif = st.text_input(
-                    "Numeri usciti (es: 14 25 38 52 67 81):",
-                    placeholder="14 25 38 52 67 81",
-                    key="inp_verif"
-                )
-                submitted_verif = st.form_submit_button(
-                    "🏆 Verifica Risultato", type="primary"
-                )
+    print(f"  [Struttura] Distribuzione decadi nella fascia "
+          f"(B=1-30, M=31-60, A=61-90):")
+    for (b, m, a), cnt in decade_sorted[:8]:
+        marker = " ← INTERMEDIA" if (b,m,a)==decade_target else ""
+        print(f"    B{b}M{m}A{a}: "
+              f"{cnt} ({cnt*100/n:.1f}%){marker}")
 
-            if submitted_verif:
-                nums_verif = sorted(set(
-                    int(n) for n in re.findall(r'\d+', inp_verif)
-                    if 1 <= int(n) <= 90
-                ))
-                if len(nums_verif) != 6:
-                    st.error("Inserisci esattamente 6 numeri.")
-                elif df_cand_use.empty:
-                    st.error("Nessuna candidata caricata.")
-                else:
-                    set_verif = set(nums_verif)
-                    vincenti  = {3: [], 4: [], 5: [], 6: []}
+    vincoli = {
+        'n_pari':     n_pari_target,
+        'n_disp':     6 - n_pari_target,
+        'nB':         decade_target[0],
+        'nM':         decade_target[1],
+        'nA':         decade_target[2],
+        'pct_pari':   pct_pari,
+        'pct_decade': pct_decade,
+    }
+    print(f"  [Struttura] Vincolo applicato: "
+          f"{n_pari_target}p/{6-n_pari_target}d "
+          f"({pct_pari}%) | "
+          f"B{decade_target[0]}M{decade_target[1]}"
+          f"A{decade_target[2]} ({pct_decade}%)")
+    return vincoli
 
-                    for _, row in df_cand_use.iterrows():
-                        s    = tuple(sorted([
-                            row['n1'], row['n2'], row['n3'],
-                            row['n4'], row['n5'], row['n6']
-                        ]))
-                        ovlp = len(set_verif & set(s))
-                        if ovlp >= 3:
-                            vincenti[ovlp].append(s)
 
-                    st.info(
-                        f"Estrazione: **{nums_verif}** | "
-                        f"Somma: **{sum(nums_verif)}** | "
-                        f"Analizzate: **{len(df_cand_use):,}**"
-                    )
-                    c1, c2, c3, c4 = st.columns(4)
-                    c4.metric("🥇 Punti 6", len(vincenti[6]),
-                              delta="JACKPOT! 🎉"
-                              if vincenti[6] else None)
-                    c3.metric("🥈 Punti 5", len(vincenti[5]))
-                    c2.metric("🥉 Punti 4", len(vincenti[4]))
-                    c1.metric("✅ Punti 3", len(vincenti[3]))
+def esegui_compensazione(df_raw, wyckoff_id, stato,
+                          df_zone, df_cicli, client):
+    fascia_min = stato['fascia_min']
+    fascia_max = stato['fascia_max']
 
-                    for punti in [6, 5, 4, 3]:
-                        if vincenti[punti]:
-                            emoji = {6:"🥇",5:"🥈",
-                                     4:"🥉",3:"✅"}
-                            st.subheader(
-                                f"{emoji[punti]} Punti {punti}"
-                                f" — {len(vincenti[punti])} "
-                                f"schedine"
-                            )
-                            righe = []
-                            for i, s in enumerate(
-                                vincenti[punti]
-                            ):
-                                nums_fmt = [
-                                    f"**{n}**"
-                                    if n in set_verif
-                                    else str(n)
-                                    for n in s
-                                ]
-                                righe.append({
-                                    '#':      i+1,
-                                    'Numeri': ' - '.join(
-                                        nums_fmt),
-                                    'Somma':  sum(s),
-                                    'Punti':  punti,
-                                })
-                            st.dataframe(
-                                pd.DataFrame(righe),
-                                hide_index=True,
-                                use_container_width=True
-                            )
+    print(f"\n  [Compensazione] Fascia target: "
+          f"{fascia_min}-{fascia_max}")
 
-                    if not any(vincenti.values()):
-                        st.warning(
-                            "Nessuna candidata ha fatto "
-                            "3+ punti con questa estrazione."
-                        )
+    cols = ['n1','n2','n3','n4','n5','n6']
+    df   = df_raw.copy()
+    if 'somma' not in df.columns:
+        df['somma'] = df[cols].sum(axis=1)
 
-# ════════════════════════════════════════════════════════
-# TAB 5 — OFFICINA
-# ════════════════════════════════════════════════════════
-with tab5:
-    st.subheader("🔧 Officina — Sistema Ridotto")
-
-    df_wyk_off  = carica_wyckoff_stato()
-    run_ids_off = carica_run_ids()
-
-    fmin = fmax = None
-    if not df_wyk_off.empty:
-        w_off = df_wyk_off.iloc[0]
-        fmin  = int(w_off['fascia_min'])
-        fmax  = int(w_off['fascia_max'])
-
-    # ── SEZIONE A: AUTOMATICA ────────────────────────────
-    st.markdown("### 🤖 Sistema Ridotto Automatico")
-    st.caption(
-        "Prende le candidate già in target Wyckoff. "
-        "Trova il minimo sottoinsieme tale che ogni "
-        "sestina NON giocata condivida almeno 4 (o 5) "
-        "numeri con almeno una sestina giocata."
+    df_fascia = estrai_estrazioni_in_fascia(
+        df, fascia_min, fascia_max
     )
 
-    if df_wyk_off.empty or not run_ids_off:
-        st.warning("Dati non disponibili. Esegui analisi.py.")
-    else:
-        st.info(
-            f"🎯 Target Wyckoff: **{fmin}-{fmax}** | "
-            f"Trend: **{w_off['trend'].upper()}** | "
-            f"Zona: **{w_off['zona_tipo']}**"
+    # Se fascia troppo stretta allarga
+    if len(df_fascia) < 50:
+        margine   = 20
+        print(f"  [Compensazione] Poche estrazioni, "
+              f"allargo fascia di ±{margine}")
+        df_fascia = estrai_estrazioni_in_fascia(
+            df, fascia_min-margine, fascia_max+margine
         )
 
-        # Mostra vincolo parità se disponibile
-        _np_off  = w_off.get('vincolo_n_pari')
-        _pp_off  = w_off.get('vincolo_pct_pari')
-        _log_off = w_off.get('vincolo_logica', '')
-        if _np_off is not None and str(_np_off) != 'nan':
-            try:
-                _np_off = int(float(_np_off))
-                _pp_off = float(_pp_off)
-                if _log_off and str(_log_off) != 'nan':
-                    descr_off = f"**{_log_off}**"
-                else:
-                    descr_off = (f"**{_np_off}p/{6-_np_off}d** + "
-                                 f"**{_np_off-1}p/{6-(_np_off-1)}d**")
-                st.success(
-                    f"🎲 Vincolo parità: {descr_off} | "
-                    f"Freq. intermedia fascia: **{_pp_off:.1f}%** | "
-                    f"applicato automaticamente alle candidate"
-                )
-            except Exception:
-                pass
-
-        with st.form("form_auto"):
-            run_labels_off = {
-                r: datetime.datetime.fromtimestamp(r)\
-                   .strftime("%d/%m/%Y %H:%M")
-                for r in run_ids_off
-            }
-            run_auto = st.selectbox(
-                "Run candidate:",
-                options=run_ids_off,
-                format_func=lambda x: run_labels_off[x]
-            )
-            n_cand_auto = st.number_input(
-                "Numero candidate da usare (in target):",
-                min_value=10,
-                max_value=5000,
-                value=200,
-                step=10,
-                help="Quante sestine in target usare. "
-                     "Consigliato: 100-500. "
-                     "Più alto = ridotto più rappresentativo "
-                     "ma calcolo più lento (O(n²))."
-            )
-            garanzia_auto = st.radio(
-                "Garanzia:", options=[4, 5],
-                index=1, horizontal=True
-            )
-            submitted_auto = st.form_submit_button(
-                "🎯 Genera Sistema Automatico",
-                type="primary"
-            )
-
-        if submitted_auto:
-            df_cand_auto = carica_candidate(run_auto)
-
-            if df_cand_auto.empty:
-                st.error("Nessuna candidata nel run.")
-            else:
-                cols_n = ['n1','n2','n3','n4','n5','n6']
-                df_cand_auto['somma'] = \
-                    df_cand_auto[cols_n].sum(axis=1)
-
-                df_in_target = df_cand_auto[
-                    (df_cand_auto['somma'] >= fmin) &
-                    (df_cand_auto['somma'] <= fmax)
-                ]
-
-                # Applica filtro parità se attivo
-                _wyk_off2 = carica_wyckoff_stato()
-                _vnp = None
-                if not _wyk_off2.empty:
-                    _np2 = _wyk_off2.iloc[0].get('vincolo_n_pari')
-                    if _np2 is not None and str(_np2) != 'nan':
-                        try:
-                            _vnp = int(float(_np2))
-                        except Exception:
-                            pass
-
-                if _vnp is not None:
-                    mask_off = df_in_target[cols_n].apply(
-                        lambda r: sum(
-                            1 for v in r if v % 2 == 0
-                        ) == _vnp, axis=1
-                    )
-                    df_in_target_par = df_in_target[mask_off]
-                    st.write(
-                        f"Candidate nel target {fmin}-{fmax}: "
-                        f"**{len(df_in_target):,}** totali | "
-                        f"**{len(df_in_target_par):,}** "
-                        f"con parità {_vnp}p/{6-_vnp}d"
-                    )
-                    df_in_target = df_in_target_par
-                else:
-                    n_in = len(df_in_target)
-                    st.write(
-                        f"Candidate nel target {fmin}-{fmax}: "
-                        f"**{n_in:,}** su "
-                        f"**{len(df_cand_auto):,}**"
-                    )
-
-                if df_in_target.empty:
-                    st.error(
-                        "Nessuna candidata nel target. "
-                        "Rilancia analisi.py."
-                    )
-                else:
-                    candidate_list = [
-                        tuple(sorted([
-                            row['n1'], row['n2'], row['n3'],
-                            row['n4'], row['n5'], row['n6']
-                        ]))
-                        for _, row in df_in_target.iterrows()
-                    ]
-                    n_use = min(int(n_cand_auto),
-                                len(candidate_list))
-                    candidate_list = candidate_list[:n_use]
-
-                    st.info(
-                        f"Usando **{n_use}** candidate in target | "
-                        f"Garanzia **{garanzia_auto}** | "
-                        f"Ogni sestina non giocata condivide "
-                        f"≥{garanzia_auto} numeri con una giocata"
-                    )
-
-                    with st.spinner(
-                        f"Covering design su {n_use} "
-                        f"sestine... (O(n²) = "
-                        f"{n_use*n_use:,} confronti)"
-                    ):
-                        sistema, efficienza, pool_out = \
-                            genera_ridotto_da_candidate(
-                                candidate_list, garanzia_auto
-                            )
-
-                    st.success(
-                        f"Sistema ridotto: "
-                        f"**{len(sistema)}** sestine | "
-                        f"Partenza: **{n_use}** | "
-                        f"Riduzione: **{efficienza}%** | "
-                        f"Garanzia: **{garanzia_auto}**"
-                    )
-
-                    if sistema:
-                        st.subheader(
-                            f"{len(sistema)} sestine "
-                            f"nel target {fmin}-{fmax}"
-                        )
-                        mostra_sistema(
-                            sistema, garanzia_auto, "auto")
-
-                        tutti_a  = [x for s in sistema for x in s]
-                        freq_a   = Counter(tutti_a)
-                        freq_df_a = pd.DataFrame([
-                            {'numero': k, 'presenze': v,
-                             'pct': round(v*100/len(sistema), 1)}
-                            for k, v in sorted(freq_a.items())
-                        ])
-                        fig_a = px.bar(
-                            freq_df_a, x='numero', y='pct',
-                            color='pct',
-                            color_continuous_scale='RdYlGn',
-                            title="Copertura numeri")
-                        fig_a.update_layout(
-                            template="plotly_dark", height=250,
-                            margin=dict(l=20,r=20,t=40,b=20))
-                        st.plotly_chart(fig_a,
-                                        use_container_width=True)
-
-    st.divider()
-
-    # ── SEZIONE B: MANUALE ───────────────────────────────
-    st.markdown("### ✏️ Selezione Manuale")
-    st.caption(
-        "Inserisci i tuoi numeri. "
-        "Sistema ridotto classico su C(N,6)."
+    # Calcola frequenze dall'interno della fascia
+    df_freq = calcola_frequenze_numeri(
+        df, df_fascia, df_cicli, fascia_min, fascia_max
     )
 
-    with st.form("form_man"):
-        numeri_input = st.text_input(
-            "Numeri (separati da virgola o spazio):",
-            placeholder="Es: 7 15 22 35 48 63 71 82"
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            garanzia_man = st.radio(
-                "Garanzia:", options=[4, 5],
-                index=1, horizontal=True
-            )
-        with c2:
-            filtra_target = st.checkbox(
-                "Solo sestine nel target Wyckoff",
-                value=True
-            )
-        submitted_man = st.form_submit_button(
-            "🚀 Genera Sistema Manuale",
-            type="primary"
-        )
+    # Seleziona universo: meno frequenti per fascia di valore
+    pool_bassa, pool_media, pool_alta, universo = \
+        seleziona_universo_tre_fasce(df_freq, n_per_fascia=12)
 
-    if submitted_man:
-        nums_raw = re.findall(r'\d+', numeri_input)
-        numeri   = sorted(set(
-            int(n) for n in nums_raw if 1 <= int(n) <= 90
-        ))
+    # Filtra per ritardo: top 20 più attesi dall'universo
+    # Carica ritardi dalla mappa_occupazione
+    res_mappa = client.table("mappa_occupazione")\
+        .select("numero,ritardo_attuale")\
+        .execute()
+    df_ritardi = pd.DataFrame(res_mappa.data)
 
-        if len(numeri) < 6:
-            st.error("Inserisci almeno 6 numeri (1-90).")
-        else:
-            if fmin and fmax:
-                s_min_m = sum(sorted(numeri)[:6])
-                s_max_m = sum(sorted(numeri)[-6:])
-                if filtra_target and (
-                    s_max_m < fmin or s_min_m > fmax
-                ):
-                    st.warning(
-                        f"⚠️ Somme possibili {s_min_m}-"
-                        f"{s_max_m} fuori dal target "
-                        f"{fmin}-{fmax}."
-                    )
+    # Prendi ritardi solo per i numeri dell'universo
+    df_rit_univ = df_ritardi[
+        df_ritardi['numero'].isin(universo)
+    ].sort_values('ritardo_attuale', ascending=False)
 
-            n_full_m = len(list(combinations(numeri, 6)))
-            st.info(
-                f"**{len(numeri)} numeri** → "
-                f"Integrale: **{n_full_m:,}** sestine | "
-                f"Garanzia **{garanzia_man}**"
-            )
+    # Top 20 per ritardo
+    universo_20 = df_rit_univ.head(20)['numero'].tolist()
+    universo_20 = sorted(universo_20)
 
-            with st.spinner("Calcolo sistema ridotto..."):
-                sistema_m, efficienza_m = \
-                    genera_sistema_ridotto(numeri, garanzia_man)
+    print(f"  [Compensazione] Filtro ritardo → top 20 più attesi:")
+    for _, r in df_rit_univ.head(20).iterrows():
+        print(f"    N.{int(r['numero']):2d} → "
+              f"ritardo={int(r['ritardo_attuale'])}")
+    print(f"  [Compensazione] Universo finale "
+          f"(20 numeri): {universo_20}")
 
-            if not sistema_m:
-                st.error("Impossibile generare.")
-            else:
-                if filtra_target and fmin and fmax:
-                    sis_show   = [s for s in sistema_m
-                                  if fmin <= sum(s) <= fmax]
-                    label_filt = f"nel target {fmin}-{fmax}"
-                else:
-                    sis_show   = sistema_m
-                    label_filt = "totali"
+    pool_numeri = universo_20
 
-                st.success(
-                    f"Ridotto: **{len(sistema_m)}** totali | "
-                    f"**{len(sis_show)}** {label_filt} | "
-                    f"Riduzione **{efficienza_m}%**"
-                )
+    # Analisi struttura storica della fascia
+    print(f"\n  [Struttura] Analisi parità+decade nella fascia...")
+    vincoli = analizza_struttura_fascia(df_fascia)
 
-                if sis_show:
-                    st.subheader(
-                        f"{len(sis_show)} sestine {label_filt}")
-                    mostra_sistema(sis_show, garanzia_man, "man")
-                else:
-                    st.warning(
-                        "Nessuna sestina nel target. "
-                        "Deseleziona filtro o cambia numeri.")
+    # Salva su Supabase — tutti 36 con flag incluso=True solo top 20
+    records = []
+    for n in universo:
+        r = df_freq[df_freq['numero']==n].iloc[0]
+        records.append({
+            "wyckoff_id":  wyckoff_id,
+            "numero":      n,
+            "freq_zona":   float(r['freq_storica']),
+            "freq_attesa": float(r['freq_attesa']),
+            "delta":       float(r['delta']),
+            "incluso":     n in universo_20,
+        })
+    if records:
+        client.table("pool_compensazione")\
+            .insert(records).execute()
+        print(f"  [Compensazione] Pool salvato: "
+              f"{len(universo)} universo | "
+              f"{len(universo_20)} attivi (top ritardo)")
 
-                tutti_m   = [x for s in sistema_m for x in s]
-                freq_m    = Counter(tutti_m)
-                freq_df_m = pd.DataFrame([
-                    {'numero': k, 'presenze': v,
-                     'pct': round(v*100/len(sistema_m), 1)}
-                    for k, v in sorted(freq_m.items())
-                ])
-                fig_man = px.bar(
-                    freq_df_m, x='numero', y='pct',
-                    color='pct',
-                    color_continuous_scale='RdYlGn',
-                    title="Copertura numeri")
-                fig_man.update_layout(
-                    template="plotly_dark", height=250,
-                    margin=dict(l=20,r=20,t=40,b=20))
-                st.plotly_chart(fig_man,
-                                use_container_width=True)
+    # Aggiorna wyckoff_stato con vincolo parità e logica
+    if vincoli:
+        try:
+            n_p    = vincoli['n_pari']
+            logica = f"{n_p}p/{6-n_p}d"
+            client.table("wyckoff_stato")\
+                .update({
+                    "vincolo_n_pari":   n_p,
+                    "vincolo_pct_pari": vincoli['pct_pari'],
+                    "vincolo_logica":   logica,
+                })\
+                .eq("id", wyckoff_id)\
+                .execute()
+            print(f"  [Struttura] Vincolo salvato: {logica}")
+        except Exception as e:
+            print(f"  [Struttura] Vincolo non salvato: {e}")
 
-# ════════════════════════════════════════════════════════
-# TAB 6 — ULTIME ESTRAZIONI
-# ════════════════════════════════════════════════════════
-with tab6:
-    st.subheader("Ultime Estrazioni")
-    n_show = st.slider("Quante estrazioni:", 5, 100, 20)
-    res    = supabase.table("estrazioni").select("*")\
-        .order("data_estrazione", desc=True)\
-        .limit(n_show).execute()
-    df_ult = pd.DataFrame(res.data)
-
-    if not df_ult.empty:
-        cols_n = ['n1','n2','n3','n4','n5','n6']
-        df_ult['somma'] = df_ult[cols_n].sum(axis=1)
-        df_ult['range'] = df_ult['n6'] - df_ult['n1']
-        st.dataframe(
-            df_ult[['data_estrazione'] + cols_n +
-                   ['jolly','superstar','somma','range']]\
-                .rename(columns={
-                    'data_estrazione': 'Data',
-                    'n1':'N1','n2':'N2','n3':'N3',
-                    'n4':'N4','n5':'N5','n6':'N6',
-                    'jolly':'Jolly','superstar':'Superstar'}),
-            hide_index=True, use_container_width=True)
-
-        c1, c2 = st.columns(2)
-        with c1:
-            fig = px.bar(df_ult.iloc[::-1],
-                         x='data_estrazione', y='somma',
-                         title="Somma ultime estrazioni",
-                         color='somma',
-                         color_continuous_scale='RdYlGn')
-            fig.add_hline(y=275.8, line_dash="dash",
-                          line_color="white",
-                          annotation_text="Media storica")
-            fig.update_layout(template="plotly_dark", height=300,
-                              margin=dict(l=20,r=20,t=40,b=20))
-            st.plotly_chart(fig, use_container_width=True)
-        with c2:
-            fig2 = px.bar(df_ult.iloc[::-1],
-                          x='data_estrazione', y='range',
-                          title="Range ultime estrazioni",
-                          color='range',
-                          color_continuous_scale='Blues')
-            fig2.add_hline(y=65.3, line_dash="dash",
-                           line_color="white",
-                           annotation_text="Media storica")
-            fig2.update_layout(template="plotly_dark", height=300,
-                               margin=dict(l=20,r=20,t=40,b=20))
-            st.plotly_chart(fig2, use_container_width=True)
+    return pool_numeri, vincoli
