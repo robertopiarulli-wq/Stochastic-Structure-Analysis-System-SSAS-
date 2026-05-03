@@ -298,30 +298,10 @@ def ricerca_su_pool(
             scarti["parita"] += 1
             continue
 
-        # FILTRO 1: Overlap
-        if not check_overlap(sestina_set, storico_np):
-            scarti["overlap"] += 1
-            continue
-
-        # FILTRO 2: Strutturali
-        passa, motivo = check_strutturali(
-            list(sestina), mappa_z,
-            somma_min=fascia_min,
-            somma_max=fascia_max
-        )
-        if not passa and motivo != "somma":
-            scarti["strutturali"] += 1
-            continue
-
-        # FILTRO 3: Figure gap
-        if not check_figura_gap(list(sestina), figure_viste):
-            scarti["figura_gap"] += 1
-            continue
-
-        # FILTRO 4: Triple attive
-        if not check_triple_attive(sestina, triple_attive):
-            scarti["triple_attive"] += 1
-            continue
+        # FILTRO 1: Overlap — DISABILITATO (test)
+        # FILTRO 2: Strutturali — DISABILITATO (test)
+        # FILTRO 3: Figure gap — DISABILITATO (test)
+        # FILTRO 4: Triple attive — DISABILITATO (test)
 
         sestine_trovate.append(list(sestina))
 
