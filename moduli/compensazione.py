@@ -150,8 +150,11 @@ def analizza_struttura_fascia(df_fascia):
 
     parita_sorted  = sorted(parita_counts.items(),
                             key=lambda x: x[1], reverse=True)
-    idx_mid_p      = len(parita_sorted) // 2
-    n_pari_target  = parita_sorted[idx_mid_p][0]
+
+    freqs_p       = [cnt for _, cnt in parita_sorted]
+mediana_p     = sorted(freqs_p)[len(freqs_p) // 2]
+n_pari_target = min(parita_sorted,
+                    key=lambda x: abs(x[1]-mediana_p))[0]
     pct_pari       = round(parita_counts[n_pari_target]*100/n, 1)
 
     print(f"  [Struttura] Distribuzione parità nella fascia:")
