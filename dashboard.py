@@ -52,27 +52,27 @@ def carica_wyckoff_stato():
         .order("run_at", desc=True).limit(1).execute()
     return pd.DataFrame(res.data)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def carica_pool(wyckoff_id):
     res = supabase.table("pool_compensazione").select("*")\
         .eq("wyckoff_id", wyckoff_id)\
         .eq("incluso", True).execute()
     return pd.DataFrame(res.data)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def carica_candidate_frequenze(run_id):
     res = supabase.table("candidate_frequenze").select("*")\
         .eq("run_id", run_id)\
         .order("pct", desc=True).execute()
     return pd.DataFrame(res.data)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def carica_candidate(run_id):
     res = supabase.table("combinazioni_candidate").select("*")\
         .eq("run_id", run_id).limit(50000).execute()
     return pd.DataFrame(res.data)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def carica_run_ids():
     res = supabase.table("candidate_frequenze")\
         .select("run_id").execute()
