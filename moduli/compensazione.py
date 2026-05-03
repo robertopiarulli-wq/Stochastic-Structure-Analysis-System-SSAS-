@@ -284,4 +284,19 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
             .insert(records).execute()
         print(f"  [Compensazione] Pool salvato su Supabase")
 
+    # Aggiorna wyckoff_stato con vincolo parità
+    if vincoli:
+        try:
+            client.table("wyckoff_stato")\
+                .update({
+                    "vincolo_n_pari":   vincoli['n_pari'],
+                    "vincolo_pct_pari": vincoli['pct_pari'],
+                })\
+                .eq("id", wyckoff_id)\
+                .execute()
+            print(f"  [Struttura] Vincolo salvato su Supabase")
+        except Exception as e:
+            print(f"  [Struttura] Vincolo non salvato "
+                  f"(colonne mancanti?): {e}")
+
     return pool_numeri, vincoli
