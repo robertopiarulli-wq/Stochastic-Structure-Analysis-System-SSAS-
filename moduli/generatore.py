@@ -86,6 +86,23 @@ def calcola_spacing_ratio(numeri):
 def calcola_decadi(numeri):
     return len(set((n-1) // 10 for n in numeri))
 
+def check_parita_decade(sestina, vincoli):
+    """
+    Verifica che la sestina rispetti i vincoli
+    parità e decade intermedi della fascia storica.
+    B = 1-30, M = 31-60, A = 61-90
+    """
+    if vincoli is None:
+        return True
+    n_pari = sum(1 for n in sestina if n % 2 == 0)
+    nB     = sum(1 for n in sestina if n <= 30)
+    nM     = sum(1 for n in sestina if 31 <= n <= 60)
+    nA     = sum(1 for n in sestina if n >= 61)
+    return (n_pari == vincoli['n_pari'] and
+            nB     == vincoli['nB']     and
+            nM     == vincoli['nM']     and
+            nA     == vincoli['nA'])
+
 # ── Filtri a cascata ─────────────────────────────────────
 def check_overlap(sestina_set, storico_np):
     arr      = np.array(list(sestina_set))
@@ -215,6 +232,7 @@ def ricerca_su_pool(
     mappa_z,
     fascia_min,
     fascia_max,
+    vincoli     = None,
     n_campioni  = 2000000,
     max_sestine = 5000,
     seed        = 42
@@ -230,14 +248,23 @@ def ricerca_su_pool(
     print(f"  Pool: {sorted(pool)}")
     print(f"  Fascia somma: {fascia_min}-{fascia_max}")
     print(f"  Max sestine: {max_sestine:,}")
+    if vincoli:
+        print(f"  Vincolo parità:  "
+              f"{vincoli['n_pari']}p/{vincoli['n_disp']}d "
+              f"({vincoli['pct_pari']}% nella fascia)")
+        print(f"  Vincolo decade:  "
+              f"B{vincoli['nB']}M{vincoli['nM']}"
+              f"A{vincoli['nA']} "
+              f"({vincoli['pct_decade']}% nella fascia)")
 
     sestine_trovate = []
     scarti = {
-        "no_sesto":      0,
-        "overlap":       0,
-        "strutturali":   0,
-        "figura_gap":    0,
-        "triple_attive": 0,
+        "no_sesto":       0,
+        "parita_decade":  0,
+        "overlap":        0,
+        "strutturali":    0,
+        "figura_gap":     0,
+        "triple_attive":  0,
     }
 
     tentativi = 0
@@ -272,6 +299,11 @@ def ricerca_su_pool(
         # Doppia verifica fascia
         if not (fascia_min <= somma <= fascia_max):
             scarti["no_sesto"] += 1
+            continue
+
+        # FILTRO 0: Parità + Decade intermedia
+        if not check_parita_decade(sestina, vincoli):
+            scarti["parita_decade"] += 1
             continue
 
         # FILTRO 1: Overlap
