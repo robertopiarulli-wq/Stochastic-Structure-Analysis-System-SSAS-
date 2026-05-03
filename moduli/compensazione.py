@@ -261,7 +261,7 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
 
     # Seleziona universo: meno frequenti per fascia di valore
     pool_bassa, pool_media, pool_alta, universo = \
-        seleziona_universo_tre_fasce(df_freq, n_per_fascia=10)
+        seleziona_universo_tre_fasce(df_freq, n_per_fascia=12)
 
     pool_numeri = universo  # 30 numeri totali
 
@@ -307,19 +307,21 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
         print(f"  [Compensazione] Universo salvato su Supabase "
               f"({len(universo)} numeri, 10 per fascia di valore)")
 
-    # Aggiorna wyckoff_stato con vincolo parità
+    # Aggiorna wyckoff_stato con vincolo parità e logica
     if vincoli:
         try:
+            n_p = vincoli['n_pari']
+            logica = f"{n_p}p/{6-n_p}d+{n_p-1}p/{6-(n_p-1)}d"
             client.table("wyckoff_stato")\
                 .update({
-                    "vincolo_n_pari":   vincoli['n_pari'],
+                    "vincolo_n_pari":   n_p,
                     "vincolo_pct_pari": vincoli['pct_pari'],
+                    "vincolo_logica":   logica,
                 })\
                 .eq("id", wyckoff_id)\
                 .execute()
-            print(f"  [Struttura] Vincolo salvato su Supabase")
+            print(f"  [Struttura] Vincolo salvato: {logica}")
         except Exception as e:
-            print(f"  [Struttura] Vincolo non salvato "
-                  f"(colonne mancanti?): {e}")
+            print(f"  [Struttura] Vincolo non salvato: {e}")
 
     return pool_numeri, vincoli
