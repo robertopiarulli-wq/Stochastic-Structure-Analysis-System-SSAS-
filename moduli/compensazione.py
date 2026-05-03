@@ -128,6 +128,75 @@ def seleziona_pool(df_freq, n_numeri=POOL_SIZE):
 
     return df_pool.sort_values('freq_storica').head(n_numeri)
 
+def analizza_struttura_fascia(df_fascia):
+    """
+    Analizza le estrazioni storiche nella fascia target.
+    Trova la distribuzione INTERMEDIA di:
+    - parità (n. numeri pari per sestina)
+    - decadi B=1-30, M=31-60, A=61-90
+    Restituisce i vincoli intermedi da applicare al generatore.
+    """
+    from collections import Counter
+    cols = ['n1','n2','n3','n4','n5','n6']
+    n    = len(df_fascia)
+    if n == 0:
+        return None
+
+    # ── Parità ───────────────────────────────────────────
+    parita_counts = Counter()
+    for _, row in df_fascia.iterrows():
+        n_pari = sum(1 for c in cols if row[c] % 2 == 0)
+        parita_counts[n_pari] += 1
+
+    parita_sorted  = sorted(parita_counts.items(),
+                            key=lambda x: x[1], reverse=True)
+    idx_mid_p      = len(parita_sorted) // 2
+    n_pari_target  = parita_sorted[idx_mid_p][0]
+    pct_pari       = round(parita_counts[n_pari_target]*100/n, 1)
+
+    print(f"  [Struttura] Distribuzione parità nella fascia:")
+    for np_, cnt in parita_sorted:
+        marker = " ← INTERMEDIA" if np_ == n_pari_target else ""
+        print(f"    {np_}p/{6-np_}d: "
+              f"{cnt} ({cnt*100/n:.1f}%){marker}")
+
+    # ── Decadi B=1-30, M=31-60, A=61-90 ─────────────────
+    decade_counts = Counter()
+    for _, row in df_fascia.iterrows():
+        nB = sum(1 for c in cols if row[c] <= 30)
+        nM = sum(1 for c in cols if 31 <= row[c] <= 60)
+        nA = sum(1 for c in cols if row[c] >= 61)
+        decade_counts[(nB, nM, nA)] += 1
+
+    decade_sorted  = sorted(decade_counts.items(),
+                            key=lambda x: x[1], reverse=True)
+    idx_mid_d      = len(decade_sorted) // 2
+    decade_target  = decade_sorted[idx_mid_d][0]
+    pct_decade     = round(decade_counts[decade_target]*100/n, 1)
+
+    print(f"  [Struttura] Distribuzione decadi nella fascia "
+          f"(B=1-30, M=31-60, A=61-90):")
+    for (b, m, a), cnt in decade_sorted[:8]:
+        marker = " ← INTERMEDIA" if (b,m,a)==decade_target else ""
+        print(f"    B{b}M{m}A{a}: "
+              f"{cnt} ({cnt*100/n:.1f}%){marker}")
+
+    vincoli = {
+        'n_pari':     n_pari_target,
+        'n_disp':     6 - n_pari_target,
+        'nB':         decade_target[0],
+        'nM':         decade_target[1],
+        'nA':         decade_target[2],
+        'pct_pari':   pct_pari,
+        'pct_decade': pct_decade,
+    }
+    print(f"  [Struttura] Vincolo applicato: "
+          f"{n_pari_target}p/{6-n_pari_target}d | "
+          f"B{decade_target[0]}M{decade_target[1]}"
+          f"A{decade_target[2]}")
+    return vincoli
+
+
 def esegui_compensazione(df_raw, wyckoff_id, stato,
                           df_zone, df_cicli, client):
     fascia_min = stato['fascia_min']
@@ -172,6 +241,10 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
               f"recente={r['freq_recente']:.4f}  "
               f"delta={r['delta']:+.4f}")
 
+    # Analisi struttura storica della fascia (parità + decade)
+    print(f"\n  [Struttura] Analisi parità+decade nella fascia...")
+    vincoli = analizza_struttura_fascia(df_fascia)
+
     # Salva su Supabase
     records = []
     for _, r in pool_df.iterrows():
@@ -188,4 +261,4 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
             .insert(records).execute()
         print(f"  [Compensazione] Pool salvato su Supabase")
 
-    return pool_numeri
+    return pool_numeri, vincoli
