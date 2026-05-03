@@ -46,7 +46,7 @@ def carica_estrazioni(limit=7304):
         .limit(limit).execute()
     return pd.DataFrame(res.data)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def carica_wyckoff_stato():
     res = supabase.table("wyckoff_stato").select("*")\
         .order("run_at", desc=True).limit(1).execute()
@@ -69,7 +69,7 @@ def carica_candidate_frequenze(run_id):
 @st.cache_data(ttl=600)
 def carica_candidate(run_id):
     res = supabase.table("combinazioni_candidate").select("*")\
-        .eq("run_id", run_id).limit(5000).execute()
+        .eq("run_id", run_id).limit(50000).execute()
     return pd.DataFrame(res.data)
 
 @st.cache_data(ttl=600)
