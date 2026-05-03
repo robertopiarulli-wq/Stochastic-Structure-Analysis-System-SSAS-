@@ -88,20 +88,16 @@ def calcola_decadi(numeri):
 
 def check_parita_decade(sestina, vincoli):
     """
-    Verifica che la sestina rispetti i vincoli
-    parità e decade intermedi della fascia storica.
-    B = 1-30, M = 31-60, A = 61-90
+    Verifica solo il vincolo parità intermedia della fascia.
+    Il vincolo decade è disabilitato: nella fascia target alta
+    (360-390) le combinazioni di decade sono strutturalmente
+    sbilanciate verso A(61-90) per ragioni matematiche
+    e il filtro risulterebbe troppo restrittivo.
     """
     if vincoli is None:
         return True
     n_pari = sum(1 for n in sestina if n % 2 == 0)
-    nB     = sum(1 for n in sestina if n <= 30)
-    nM     = sum(1 for n in sestina if 31 <= n <= 60)
-    nA     = sum(1 for n in sestina if n >= 61)
-    return (n_pari == vincoli['n_pari'] and
-            nB     == vincoli['nB']     and
-            nM     == vincoli['nM']     and
-            nA     == vincoli['nA'])
+    return n_pari == vincoli['n_pari']
 
 # ── Filtri a cascata ─────────────────────────────────────
 def check_overlap(sestina_set, storico_np):
@@ -249,22 +245,18 @@ def ricerca_su_pool(
     print(f"  Fascia somma: {fascia_min}-{fascia_max}")
     print(f"  Max sestine: {max_sestine:,}")
     if vincoli:
-        print(f"  Vincolo parità:  "
+        print(f"  Vincolo parità: "
               f"{vincoli['n_pari']}p/{vincoli['n_disp']}d "
               f"({vincoli['pct_pari']}% nella fascia)")
-        print(f"  Vincolo decade:  "
-              f"B{vincoli['nB']}M{vincoli['nM']}"
-              f"A{vincoli['nA']} "
-              f"({vincoli['pct_decade']}% nella fascia)")
 
     sestine_trovate = []
     scarti = {
-        "no_sesto":       0,
-        "parita_decade":  0,
-        "overlap":        0,
-        "strutturali":    0,
-        "figura_gap":     0,
-        "triple_attive":  0,
+        "no_sesto":      0,
+        "parita":        0,
+        "overlap":       0,
+        "strutturali":   0,
+        "figura_gap":    0,
+        "triple_attive": 0,
     }
 
     tentativi = 0
@@ -301,9 +293,9 @@ def ricerca_su_pool(
             scarti["no_sesto"] += 1
             continue
 
-        # FILTRO 0: Parità + Decade intermedia
+        # FILTRO 0: Parità intermedia della fascia
         if not check_parita_decade(sestina, vincoli):
-            scarti["parita_decade"] += 1
+            scarti["parita"] += 1
             continue
 
         # FILTRO 1: Overlap
