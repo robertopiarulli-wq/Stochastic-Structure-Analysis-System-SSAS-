@@ -897,6 +897,22 @@ with tab5:
             f"Zona: **{w_off['zona_tipo']}**"
         )
 
+        # Mostra vincolo parità se disponibile
+        _np_off = w_off.get('vincolo_n_pari')
+        _pp_off = w_off.get('vincolo_pct_pari')
+        if _np_off is not None and str(_np_off) != 'nan':
+            try:
+                _np_off = int(float(_np_off))
+                _pp_off = float(_pp_off)
+                st.success(
+                    f"🎲 Vincolo parità: "
+                    f"**{_np_off}p/{6-_np_off}d** "
+                    f"({_pp_off:.1f}% nella fascia) — "
+                    f"applicato automaticamente alle candidate"
+                )
+            except Exception:
+                pass
+
         with st.form("form_auto"):
             run_labels_off = {
                 r: datetime.datetime.fromtimestamp(r)\
