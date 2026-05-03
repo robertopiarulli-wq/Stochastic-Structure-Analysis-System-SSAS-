@@ -537,8 +537,50 @@ with tab4:
         if df_freq.empty:
             st.warning("Frequenze non disponibili.")
         else:
-            st.info(f"**{len(df_cand):,}** sestine | "
-                    f"Run del {run_labels[run_sel]}")
+            # ── Carica vincolo parità dal DB ─────────────────
+            df_wyk_t = carica_wyckoff_stato()
+            vincolo_n_pari = None
+            vincolo_pct    = None
+            if not df_wyk_t.empty:
+                w_t = df_wyk_t.iloc[0]
+                _np = w_t.get('vincolo_n_pari')
+                _pp = w_t.get('vincolo_pct_pari')
+                if _np is not None and str(_np) != 'nan':
+                    try:
+                        vincolo_n_pari = int(float(_np))
+                        vincolo_pct    = float(_pp)
+                    except Exception:
+                        pass
+
+            # ── Toggle filtro parità ──────────────────────────
+            cols_n = ['n1','n2','n3','n4','n5','n6']
+            if vincolo_n_pari is not None:
+                usa_parita = st.checkbox(
+                    f"🎲 Filtra per vincolo parità: "
+                    f"**{vincolo_n_pari}p/{6-vincolo_n_pari}d** "
+                    f"({vincolo_pct:.1f}% nella fascia storica)",
+                    value=True,
+                    key="chk_parita"
+                )
+                if usa_parita:
+                    mask_p = df_cand[cols_n].apply(
+                        lambda r: sum(1 for v in r if v % 2 == 0)
+                        == vincolo_n_pari, axis=1
+                    )
+                    df_cand_use = df_cand[mask_p].copy()
+                    st.info(
+                        f"**{len(df_cand_use):,}** sestine "
+                        f"con vincolo parità | "
+                        f"**{len(df_cand):,}** totali nel run"
+                    )
+                else:
+                    df_cand_use = df_cand.copy()
+                    st.info(f"**{len(df_cand_use):,}** sestine | "
+                            f"Run del {run_labels[run_sel]}")
+            else:
+                df_cand_use = df_cand.copy()
+                st.info(f"**{len(df_cand_use):,}** sestine | "
+                        f"Run del {run_labels[run_sel]}")
 
             st.subheader("Frequenza numeri nelle candidate")
             df_fs = df_freq.sort_values('numero')
@@ -580,7 +622,6 @@ with tab4:
                              f"{r['pct']:.1f}%")
             with c3:
                 st.write("🟢 **Pool Wyckoff attivo**")
-                df_wyk_t = carica_wyckoff_stato()
                 if not df_wyk_t.empty:
                     pool_df = carica_pool(
                         int(df_wyk_t.iloc[0]['id']))
@@ -589,12 +630,26 @@ with tab4:
                         for i in range(0, len(nums), 5):
                             st.write(" ".join(
                                 f"**{n}**" for n in nums[i:i+5]))
+                if vincolo_n_pari is not None:
+                    st.divider()
+                    st.write("🎲 **Vincolo parità**")
+                    st.write(
+                        f"**{vincolo_n_pari}p / "
+                        f"{6-vincolo_n_pari}d** "
+                        f"({vincolo_pct:.1f}%)"
+                    )
 
             st.divider()
-            st.subheader("Prime 50 sestine candidate")
-            if not df_cand.empty:
-                cols_n  = ['n1','n2','n3','n4','n5','n6']
-                df_show = df_cand.head(50)[cols_n].copy()
+            lbl = ("con vincolo parità"
+                   if vincolo_n_pari is not None
+                   and st.session_state.get("chk_parita", True)
+                   else "totali")
+            st.subheader(
+                f"Prime 50 sestine candidate {lbl} "
+                f"({len(df_cand_use):,})"
+            )
+            if not df_cand_use.empty:
+                df_show = df_cand_use.head(50)[cols_n].copy()
                 df_show.columns = ['N1','N2','N3','N4','N5','N6']
                 df_show['Somma'] = df_show.sum(axis=1)
                 df_show['Range'] = df_show['N6'] - df_show['N1']
@@ -602,16 +657,22 @@ with tab4:
                 st.dataframe(df_show, hide_index=True,
                              use_container_width=True)
                 st.download_button(
-                    "⬇️ Scarica tutte (CSV)",
-                    df_cand[cols_n].to_csv(index=False),
-                    f"candidate_{run_sel}.csv", "text/csv")
+                    "⬇️ Scarica candidate filtrate (CSV)",
+                    df_cand_use[cols_n].to_csv(index=False),
+                    f"candidate_parita_{run_sel}.csv",
+                    "text/csv",
+                    key="dl_cand_parita"
+                )
 
             # ── SEZIONE B: ANALISI PROSSIMITÀ ───────────────
             st.divider()
             st.subheader("🔍 Analisi Prossimità")
             st.caption(
-                "Inserisci 6 numeri e vedi quante delle "
-                "candidate condividono 3, 4 o 5 numeri con essa."
+                "Analisi sulle candidate "
+                + ("con vincolo parità attivo."
+                   if vincolo_n_pari is not None
+                   and st.session_state.get("chk_parita", True)
+                   else "totali.")
             )
 
             with st.form("form_prossimita"):
@@ -631,18 +692,17 @@ with tab4:
                 ))
                 if len(nums_prox) != 6:
                     st.error("Inserisci esattamente 6 numeri.")
-                elif df_cand.empty:
+                elif df_cand_use.empty:
                     st.error("Nessuna candidata caricata.")
                 else:
-                    set_prox = set(nums_prox)
-                    cols_n   = ['n1','n2','n3','n4','n5','n6']
+                    set_prox  = set(nums_prox)
                     risultati = []
-                    for _, row in df_cand.iterrows():
-                        s     = tuple(sorted([
+                    for _, row in df_cand_use.iterrows():
+                        s    = tuple(sorted([
                             row['n1'], row['n2'], row['n3'],
                             row['n4'], row['n5'], row['n6']
                         ]))
-                        ovlp  = len(set_prox & set(s))
+                        ovlp = len(set_prox & set(s))
                         if ovlp >= 3:
                             risultati.append({
                                 'overlap': ovlp,
@@ -659,44 +719,46 @@ with tab4:
 
                     st.info(
                         f"La tua sestina: **{nums_prox}** | "
-                        f"Somma: **{sum(nums_prox)}**"
+                        f"Somma: **{sum(nums_prox)}** | "
+                        f"Analizzate: **{len(df_cand_use):,}**"
                     )
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("5 numeri in comune", n5,
-                              delta="vicinissime" if n5 > 0 else None)
-                    c2.metric("4 numeri in comune", n4)
-                    c3.metric("3 numeri in comune", n3)
+                    c1.metric("5 in comune", n5,
+                              delta="vicinissime"
+                              if n5 > 0 else None)
+                    c2.metric("4 in comune", n4)
+                    c3.metric("3 in comune", n3)
                     c4.metric("Esatta (6/6)", n6,
-                              delta="🎯 presente!" if n6 > 0 else None)
+                              delta="🎯 presente!"
+                              if n6 > 0 else None)
 
                     if risultati:
                         df_prox = pd.DataFrame(risultati)\
                             .sort_values('overlap', ascending=False)
-                        st.subheader(
-                            f"Top candidate più vicine "
-                            f"({len(df_prox)} con ≥3 in comune)"
-                        )
 
-                        # Evidenzia numeri in comune
                         def evidenzia(row):
                             celle = []
                             for col in ['N1','N2','N3',
                                         'N4','N5','N6']:
                                 n = row[col]
-                                if n in set_prox:
-                                    celle.append(f"**{n}**")
-                                else:
-                                    celle.append(str(n))
+                                celle.append(
+                                    f"**{n}**"
+                                    if n in set_prox
+                                    else str(n)
+                                )
                             return ' - '.join(celle)
 
                         df_prox['Numeri'] = df_prox.apply(
                             evidenzia, axis=1)
                         df_prox.insert(0, '#',
                                        range(1, len(df_prox)+1))
-
+                        st.subheader(
+                            f"{len(df_prox)} candidate "
+                            f"con ≥3 in comune"
+                        )
                         st.dataframe(
-                            df_prox[['#','overlap','Numeri',
-                                     'Somma']]\
+                            df_prox[['#','overlap',
+                                     'Numeri','Somma']]\
                                 .rename(columns={
                                     'overlap': 'In comune'}),
                             hide_index=True,
@@ -712,8 +774,11 @@ with tab4:
             st.divider()
             st.subheader("🏆 Verifica Estrazione")
             st.caption(
-                "Inserisci i 6 numeri usciti e vedi quante "
-                "candidate avrebbero vinto (3, 4, 5, 6 punti)."
+                "Analisi sulle candidate "
+                + ("con vincolo parità attivo."
+                   if vincolo_n_pari is not None
+                   and st.session_state.get("chk_parita", True)
+                   else "totali.")
             )
 
             with st.form("form_verifica"):
@@ -733,14 +798,13 @@ with tab4:
                 ))
                 if len(nums_verif) != 6:
                     st.error("Inserisci esattamente 6 numeri.")
-                elif df_cand.empty:
+                elif df_cand_use.empty:
                     st.error("Nessuna candidata caricata.")
                 else:
                     set_verif = set(nums_verif)
-                    cols_n    = ['n1','n2','n3','n4','n5','n6']
                     vincenti  = {3: [], 4: [], 5: [], 6: []}
 
-                    for _, row in df_cand.iterrows():
+                    for _, row in df_cand_use.iterrows():
                         s    = tuple(sorted([
                             row['n1'], row['n2'], row['n3'],
                             row['n4'], row['n5'], row['n6']
@@ -751,9 +815,9 @@ with tab4:
 
                     st.info(
                         f"Estrazione: **{nums_verif}** | "
-                        f"Somma: **{sum(nums_verif)}**"
+                        f"Somma: **{sum(nums_verif)}** | "
+                        f"Analizzate: **{len(df_cand_use):,}**"
                     )
-
                     c1, c2, c3, c4 = st.columns(4)
                     c4.metric("🥇 Punti 6", len(vincenti[6]),
                               delta="JACKPOT! 🎉"
@@ -762,26 +826,29 @@ with tab4:
                     c2.metric("🥉 Punti 4", len(vincenti[4]))
                     c1.metric("✅ Punti 3", len(vincenti[3]))
 
-                    # Mostra dettaglio per categoria
                     for punti in [6, 5, 4, 3]:
                         if vincenti[punti]:
-                            emoji = {6:"🥇",5:"🥈",4:"🥉",3:"✅"}
+                            emoji = {6:"🥇",5:"🥈",
+                                     4:"🥉",3:"✅"}
                             st.subheader(
-                                f"{emoji[punti]} Punti {punti} "
-                                f"— {len(vincenti[punti])} schedine"
+                                f"{emoji[punti]} Punti {punti}"
+                                f" — {len(vincenti[punti])} "
+                                f"schedine"
                             )
                             righe = []
-                            for i, s in enumerate(vincenti[punti]):
-                                # Evidenzia numeri vincenti
-                                nums_fmt = []
-                                for n in s:
-                                    if n in set_verif:
-                                        nums_fmt.append(f"**{n}**")
-                                    else:
-                                        nums_fmt.append(str(n))
+                            for i, s in enumerate(
+                                vincenti[punti]
+                            ):
+                                nums_fmt = [
+                                    f"**{n}**"
+                                    if n in set_verif
+                                    else str(n)
+                                    for n in s
+                                ]
                                 righe.append({
                                     '#':      i+1,
-                                    'Numeri': ' - '.join(nums_fmt),
+                                    'Numeri': ' - '.join(
+                                        nums_fmt),
                                     'Somma':  sum(s),
                                     'Punti':  punti,
                                 })
@@ -876,12 +943,38 @@ with tab5:
                     (df_cand_auto['somma'] <= fmax)
                 ]
 
-                n_in = len(df_in_target)
-                st.write(
-                    f"Candidate nel target {fmin}-{fmax}: "
-                    f"**{n_in:,}** su "
-                    f"**{len(df_cand_auto):,}**"
-                )
+                # Applica filtro parità se attivo
+                _wyk_off2 = carica_wyckoff_stato()
+                _vnp = None
+                if not _wyk_off2.empty:
+                    _np2 = _wyk_off2.iloc[0].get('vincolo_n_pari')
+                    if _np2 is not None and str(_np2) != 'nan':
+                        try:
+                            _vnp = int(float(_np2))
+                        except Exception:
+                            pass
+
+                if _vnp is not None:
+                    mask_off = df_in_target[cols_n].apply(
+                        lambda r: sum(
+                            1 for v in r if v % 2 == 0
+                        ) == _vnp, axis=1
+                    )
+                    df_in_target_par = df_in_target[mask_off]
+                    st.write(
+                        f"Candidate nel target {fmin}-{fmax}: "
+                        f"**{len(df_in_target):,}** totali | "
+                        f"**{len(df_in_target_par):,}** "
+                        f"con parità {_vnp}p/{6-_vnp}d"
+                    )
+                    df_in_target = df_in_target_par
+                else:
+                    n_in = len(df_in_target)
+                    st.write(
+                        f"Candidate nel target {fmin}-{fmax}: "
+                        f"**{n_in:,}** su "
+                        f"**{len(df_cand_auto):,}**"
+                    )
 
                 if df_in_target.empty:
                     st.error(
