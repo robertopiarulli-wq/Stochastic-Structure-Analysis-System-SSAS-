@@ -433,16 +433,20 @@ with tab3:
                     f"Cicli: {w['cicli_analizzati']}")
 
             # Vincolo parità se disponibile
-            n_p = w.get('vincolo_n_pari')
+            n_p   = w.get('vincolo_n_pari')
             pct_p = w.get('vincolo_pct_pari')
-            if n_p is not None:
-                n_p = int(n_p)
-                st.success(
-                    f"🎲 Vincolo parità attivo: "
-                    f"**{n_p} pari / {6-n_p} dispari** | "
-                    f"Frequenza storica nella fascia: "
-                    f"**{pct_p:.1f}%**"
-                )
+            if n_p is not None and str(n_p) != 'nan':
+                try:
+                    n_p   = int(float(n_p))
+                    pct_p = float(pct_p)
+                    st.success(
+                        f"🎲 Vincolo parità attivo: "
+                        f"**{n_p} pari / {6-n_p} dispari** | "
+                        f"Frequenza storica nella fascia: "
+                        f"**{pct_p:.1f}%**"
+                    )
+                except Exception:
+                    pass
 
         st.divider()
         tail    = 500
