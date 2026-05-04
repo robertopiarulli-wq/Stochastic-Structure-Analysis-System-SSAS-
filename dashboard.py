@@ -890,6 +890,20 @@ with tab5:
         fmin  = int(w_off['fascia_min'])
         fmax  = int(w_off['fascia_max'])
 
+    # Mostra totale sestine run attivo
+    if run_ids_off:
+        run_last = run_ids_off[0]
+        df_cand_off_tot = carica_candidate(run_last)
+        n_tot_off = len(df_cand_off_tot)
+        run_label_last = datetime.datetime.fromtimestamp(
+            run_last).strftime("%d/%m/%Y %H:%M")
+        st.metric(
+            label="📊 Sestine candidate nel run attivo",
+            value=f"{n_tot_off:,}",
+            delta=f"Run del {run_label_last}",
+            delta_color="off"
+        )
+
     # ── SEZIONE A: AUTOMATICA ────────────────────────────
     st.markdown("### 🤖 Sistema Ridotto Automatico")
     st.caption(
@@ -1080,14 +1094,16 @@ with tab5:
     # ── SEZIONE B: MANUALE ───────────────────────────────
     st.markdown("### ✏️ Selezione Manuale")
     st.caption(
-        "Inserisci i tuoi numeri. "
-        "Sistema ridotto classico su C(N,6)."
+        "Inserisci i tuoi numeri preferiti. "
+        "Il sistema filtra le candidate già validate "
+        "(Wyckoff + parità) che usano SOLO quei numeri, "
+        "poi genera il ridotto su quelle."
     )
 
     with st.form("form_man"):
         numeri_input = st.text_input(
-            "Numeri (separati da virgola o spazio):",
-            placeholder="Es: 7 15 22 35 48 63 71 82"
+            "I tuoi numeri (almeno 6, separati da spazio):",
+            placeholder="Es: 1 17 31 41 67 70 74 80 83 89"
         )
         c1, c2 = st.columns(2)
         with c1:
@@ -1096,9 +1112,12 @@ with tab5:
                 index=1, horizontal=True
             )
         with c2:
-            filtra_target = st.checkbox(
-                "Solo sestine nel target Wyckoff",
-                value=True
+            run_man = st.selectbox(
+                "Run candidate:",
+                options=run_ids_off if run_ids_off else [0],
+                format_func=lambda x: datetime.datetime
+                    .fromtimestamp(x).strftime("%d/%m/%Y %H:%M")
+                    if x > 0 else "—"
             )
         submitted_man = st.form_submit_button(
             "🚀 Genera Sistema Manuale",
@@ -1113,73 +1132,91 @@ with tab5:
 
         if len(numeri) < 6:
             st.error("Inserisci almeno 6 numeri (1-90).")
+        elif run_man == 0:
+            st.error("Nessun run disponibile.")
         else:
-            if fmin and fmax:
-                s_min_m = sum(sorted(numeri)[:6])
-                s_max_m = sum(sorted(numeri)[-6:])
-                if filtra_target and (
-                    s_max_m < fmin or s_min_m > fmax
-                ):
-                    st.warning(
-                        f"⚠️ Somme possibili {s_min_m}-"
-                        f"{s_max_m} fuori dal target "
-                        f"{fmin}-{fmax}."
-                    )
+            set_numeri = set(numeri)
+            df_cand_man = carica_candidate(run_man)
 
-            n_full_m = len(list(combinations(numeri, 6)))
-            st.info(
-                f"**{len(numeri)} numeri** → "
-                f"Integrale: **{n_full_m:,}** sestine | "
-                f"Garanzia **{garanzia_man}**"
-            )
-
-            with st.spinner("Calcolo sistema ridotto..."):
-                sistema_m, efficienza_m = \
-                    genera_sistema_ridotto(numeri, garanzia_man)
-
-            if not sistema_m:
-                st.error("Impossibile generare.")
+            if df_cand_man.empty:
+                st.error("Nessuna candidata nel run.")
             else:
-                if filtra_target and fmin and fmax:
-                    sis_show   = [s for s in sistema_m
-                                  if fmin <= sum(s) <= fmax]
-                    label_filt = f"nel target {fmin}-{fmax}"
-                else:
-                    sis_show   = sistema_m
-                    label_filt = "totali"
+                cols_n = ['n1','n2','n3','n4','n5','n6']
 
-                st.success(
-                    f"Ridotto: **{len(sistema_m)}** totali | "
-                    f"**{len(sis_show)}** {label_filt} | "
-                    f"Riduzione **{efficienza_m}%**"
+                # Filtra candidate dove TUTTI i 6 numeri
+                # sono nel set inserito dall'utente
+                mask_man = df_cand_man[cols_n].apply(
+                    lambda r: all(v in set_numeri for v in r),
+                    axis=1
+                )
+                df_filtrate = df_cand_man[mask_man]
+
+                st.info(
+                    f"I tuoi **{len(numeri)} numeri**: "
+                    f"{numeri} | "
+                    f"Candidate compatibili: "
+                    f"**{len(df_filtrate):,}** su "
+                    f"**{len(df_cand_man):,}** totali"
                 )
 
-                if sis_show:
-                    st.subheader(
-                        f"{len(sis_show)} sestine {label_filt}")
-                    mostra_sistema(sis_show, garanzia_man, "man")
-                else:
+                if df_filtrate.empty:
                     st.warning(
-                        "Nessuna sestina nel target. "
-                        "Deseleziona filtro o cambia numeri.")
+                        "Nessuna candidata usa solo questi numeri. "
+                        "Prova ad aggiungerne altri dal pool attivo."
+                    )
+                else:
+                    candidate_list = [
+                        tuple(sorted([
+                            row['n1'], row['n2'], row['n3'],
+                            row['n4'], row['n5'], row['n6']
+                        ]))
+                        for _, row in df_filtrate.iterrows()
+                    ]
 
-                tutti_m   = [x for s in sistema_m for x in s]
-                freq_m    = Counter(tutti_m)
-                freq_df_m = pd.DataFrame([
-                    {'numero': k, 'presenze': v,
-                     'pct': round(v*100/len(sistema_m), 1)}
-                    for k, v in sorted(freq_m.items())
-                ])
-                fig_man = px.bar(
-                    freq_df_m, x='numero', y='pct',
-                    color='pct',
-                    color_continuous_scale='RdYlGn',
-                    title="Copertura numeri")
-                fig_man.update_layout(
-                    template="plotly_dark", height=250,
-                    margin=dict(l=20,r=20,t=40,b=20))
-                st.plotly_chart(fig_man,
-                                use_container_width=True)
+                    with st.spinner(
+                        f"Covering design su "
+                        f"{len(candidate_list)} candidate..."
+                    ):
+                        sistema_m, efficienza_m, pool_m = \
+                            genera_ridotto_da_candidate(
+                                candidate_list, garanzia_man
+                            )
+
+                    st.success(
+                        f"Sistema ridotto: "
+                        f"**{len(sistema_m)}** sestine | "
+                        f"Partenza: **{len(candidate_list)}** | "
+                        f"Riduzione: **{efficienza_m}%** | "
+                        f"Garanzia: **{garanzia_man}**"
+                    )
+
+                    if sistema_m:
+                        st.subheader(
+                            f"{len(sistema_m)} sestine "
+                            f"nel target {fmin}-{fmax}"
+                        )
+                        mostra_sistema(
+                            sistema_m, garanzia_man, "man")
+
+                        tutti_m   = [x for s in sistema_m
+                                     for x in s]
+                        freq_m    = Counter(tutti_m)
+                        freq_df_m = pd.DataFrame([
+                            {'numero': k, 'presenze': v,
+                             'pct': round(
+                                 v*100/len(sistema_m), 1)}
+                            for k, v in sorted(freq_m.items())
+                        ])
+                        fig_man = px.bar(
+                            freq_df_m, x='numero', y='pct',
+                            color='pct',
+                            color_continuous_scale='RdYlGn',
+                            title="Copertura numeri")
+                        fig_man.update_layout(
+                            template="plotly_dark", height=250,
+                            margin=dict(l=20,r=20,t=40,b=20))
+                        st.plotly_chart(
+                            fig_man, use_container_width=True)
 
 # ════════════════════════════════════════════════════════
 # TAB 6 — ULTIME ESTRAZIONI
