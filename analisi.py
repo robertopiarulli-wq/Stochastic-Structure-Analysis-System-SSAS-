@@ -17,6 +17,7 @@ from moduli.costanti    import calcola_costanti
 from moduli.mappa       import calcola_mappa
 from moduli.wyckoff     import esegui_wyckoff
 from moduli.compensazione import esegui_compensazione
+from moduli.lstm_somme  import esegui_lstm
 from moduli.generatore  import (
     carica_storico,
     carica_triple_attive,
@@ -109,6 +110,18 @@ wyckoff_id, stato, df_zone, df_cicli = esegui_wyckoff(
     client = supabase
 )
 
+# ── STEP 4b: LSTM — Merge con Wyckoff ───────────────────
+print("\n[4b/5] LSTM Somme — merge con fascia Wyckoff...")
+cols_somma = ['n1','n2','n3','n4','n5','n6']
+df['somma'] = df[cols_somma].sum(axis=1)
+somme_serie = df['somma']
+
+stato = esegui_lstm(somme_serie, stato, verbose=True)
+
+print(f"  Fascia finale: "
+      f"{stato['fascia_min']}-{stato['fascia_max']} "
+      f"[concordanza: {stato.get('lstm_concordanza','N/A')}]")
+
 # ── STEP 5: Compensazione + Generatore ───────────────────
 print("\n[5/5] Compensazione e generazione sestine...")
 
@@ -121,15 +134,29 @@ pool_numeri, vincoli = esegui_compensazione(
     client     = supabase
 )
 
-# Carica strutture per filtri (storico mantenuto per compatibilità)
+# Carica ultime 3 estrazioni → numeri da escludere
+print("  Caricamento ultime 3 estrazioni...")
+res_ult = supabase.table("estrazioni")\
+    .select("n1,n2,n3,n4,n5,n6")\
+    .order("data_estrazione", desc=True)\
+    .limit(3)\
+    .execute()
+numeri_esclusi = set()
+for row in res_ult.data:
+    for col in ['n1','n2','n3','n4','n5','n6']:
+        numeri_esclusi.add(row[col])
+print(f"  Numeri esclusi (ultime 3 estrazioni): "
+      f"{sorted(numeri_esclusi)}")
+
+# Carica strutture per filtri
 storico_np, figure_viste = carica_storico(supabase)
 triple_attive            = carica_triple_attive(
     supabase, n_estrazioni=50)
 mappa_z                  = carica_mappa_occupazione(supabase)
 
 # Genera sestine dal pool Wyckoff
-# Il filtro ritardo è già applicato in compensazione.py
-# Nessuna esclusione esplicita per ultime estrazioni
+# Spazio totale stimato ~119.000 sestine
+# n_campioni=10M per coprire tutto lo spazio
 sestine = ricerca_su_pool(
     pool            = pool_numeri,
     storico_np      = storico_np,
@@ -139,7 +166,7 @@ sestine = ricerca_su_pool(
     fascia_min      = stato['fascia_min'],
     fascia_max      = stato['fascia_max'],
     vincoli         = vincoli,
-    numeri_esclusi  = None,
+    numeri_esclusi  = numeri_esclusi,
     n_campioni      = 10000000,
     max_sestine     = 999999
 )
