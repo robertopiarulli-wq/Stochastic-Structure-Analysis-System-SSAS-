@@ -255,9 +255,10 @@ def mostra_sistema(sistema, garanzia, key_prefix):
 st.title("🎯 SSAS — Stochastic Structure Analysis System")
 st.caption("Analisi strutturale Superenalotto | Wyckoff + Parisi")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Costanti", "🗺️ Mappa 1-90", "📈 Wyckoff",
-    "🎯 Candidate", "🔧 Officina", "🔢 Estrazioni"
+    "🎯 Candidate", "🔧 Officina", "🔢 Estrazioni",
+    "🅱️ Piano B"
 ])
 
 # ════════════════════════════════════════════════════════
@@ -1268,3 +1269,294 @@ with tab6:
             fig2.update_layout(template="plotly_dark", height=300,
                                margin=dict(l=20,r=20,t=40,b=20))
             st.plotly_chart(fig2, use_container_width=True)
+
+# ════════════════════════════════════════════════════════
+# TAB 7 — PIANO B
+# ════════════════════════════════════════════════════════
+with tab7:
+    st.subheader("🅱️ Piano B — Sistema Indipendente da Wyckoff")
+    st.caption(
+        "Approccio alternativo basato su 3 condizioni statistiche: "
+        "**Ritardo collettivo** × **Somma media ultime 10** × "
+        "**Parità ultima estrazione**. "
+        "Indipendente dal sistema Wyckoff — confronto e verifica."
+    )
+
+    df_est_b  = carica_estrazioni()
+    df_mappa_b = carica_mappa()
+
+    if df_est_b.empty or df_mappa_b.empty:
+        st.warning("Dati non disponibili.")
+    else:
+        cols_n = ['n1','n2','n3','n4','n5','n6']
+        df_est_b['somma'] = df_est_b[cols_n].sum(axis=1)
+        df_est_b = df_est_b.sort_values(
+            'data_estrazione').reset_index(drop=True)
+
+        # ── CONDIZIONE 1: Top 20 ritardatari da tutti 90 ─────
+        st.markdown("### Condizione 1 — Top 20 Ritardatari")
+        df_rit_b = df_mappa_b.sort_values(
+            'ritardo_attuale', ascending=False).head(20)
+        top20_b  = sorted(df_rit_b['numero'].tolist())
+
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            fig_rit = go.Figure(go.Bar(
+                x=df_rit_b['numero'],
+                y=df_rit_b['ritardo_attuale'],
+                marker_color='#636EFA'
+            ))
+            fig_rit.update_layout(
+                template="plotly_dark", height=250,
+                margin=dict(l=20,r=20,t=20,b=20),
+                xaxis_title="Numero",
+                yaxis_title="Ritardo (estrazioni)"
+            )
+            st.plotly_chart(fig_rit, use_container_width=True)
+        with c2:
+            st.write("**Top 20 più attesi (tutti 90):**")
+            for i in range(0, len(top20_b), 5):
+                st.write(" ".join(
+                    f"**{n}**" for n in top20_b[i:i+5]))
+
+        # ── CONDIZIONE 2: Somma media ultime 10 ──────────────
+        st.markdown("### Condizione 2 — Somma Media Ultime 10")
+        ultime10 = df_est_b.tail(10)
+        media_s10 = float(ultime10['somma'].mean())
+        margine_b = st.slider(
+            "Margine ±", min_value=10, max_value=60,
+            value=30, step=5, key="margine_b"
+        )
+        fmin_b = int(media_s10 - margine_b)
+        fmax_b = int(media_s10 + margine_b)
+
+        st.info(
+            f"Media somme ultime 10: **{media_s10:.1f}** | "
+            f"Fascia target: **{fmin_b}-{fmax_b}**"
+        )
+
+        # ── CONDIZIONE 3: Parità ultima estrazione ───────────
+        st.markdown("### Condizione 3 — Parità Ultima Estrazione")
+        ultima_b = df_est_b.iloc[-1]
+        n_pari_ultima = sum(
+            1 for c in cols_n if ultima_b[c] % 2 == 0
+        )
+        n_disp_ultima = 6 - n_pari_ultima
+
+        st.info(
+            f"Ultima estrazione: "
+            f"**{int(ultima_b['n1'])},{int(ultima_b['n2'])},"
+            f"{int(ultima_b['n3'])},{int(ultima_b['n4'])},"
+            f"{int(ultima_b['n5'])},{int(ultima_b['n6'])}** | "
+            f"Somma: **{int(ultima_b['somma'])}** | "
+            f"Parità: **{n_pari_ultima}p/{n_disp_ultima}d**"
+        )
+
+        # Slider per scegliere parità
+        parita_b = st.radio(
+            "Parità da applicare:",
+            options=[
+                f"{n_pari_ultima}p/{n_disp_ultima}d (come ultima)",
+                f"{n_pari_ultima-1}p/{n_disp_ultima+1}d",
+                f"{n_pari_ultima+1}p/{n_disp_ultima-1}d",
+            ],
+            horizontal=True,
+            key="parita_b"
+        )
+        # Estrai n_pari dalla scelta
+        n_pari_b = int(parita_b.split("p/")[0])
+
+        # ── GENERAZIONE CANDIDATE PIANO B ────────────────────
+        st.markdown("### Risultato — Candidate Piano B")
+        st.caption(
+            f"C(20,6) = 38.760 combinazioni | "
+            f"Filtro somma [{fmin_b}-{fmax_b}] | "
+            f"Filtro parità {n_pari_b}p/{6-n_pari_b}d"
+        )
+
+        if st.button("🔄 Calcola Candidate Piano B",
+                     type="primary", key="btn_pianob"):
+
+            candidate_b = []
+            for sestina in combinations(top20_b, 6):
+                somma = sum(sestina)
+                if not (fmin_b <= somma <= fmax_b):
+                    continue
+                n_pari = sum(
+                    1 for n in sestina if n % 2 == 0
+                )
+                if n_pari != n_pari_b:
+                    continue
+                candidate_b.append(list(sestina))
+
+            if not candidate_b:
+                st.warning(
+                    "Nessuna candidata con questi filtri. "
+                    "Prova ad aumentare il margine somma."
+                )
+            else:
+                # Numeri unici nelle candidate
+                tutti_b = [n for s in candidate_b for n in s]
+                freq_b  = Counter(tutti_b)
+                numeri_unici_b = sorted(freq_b.keys())
+
+                st.success(
+                    f"**{len(candidate_b):,}** candidate | "
+                    f"**{len(numeri_unici_b)}** numeri unici | "
+                    f"Somma [{fmin_b}-{fmax_b}] | "
+                    f"{n_pari_b}p/{6-n_pari_b}d"
+                )
+
+                # Frequenze numeri
+                freq_df_b = pd.DataFrame([
+                    {'numero': k,
+                     'presenze': v,
+                     'pct': round(v*100/len(candidate_b), 1)}
+                    for k, v in sorted(freq_b.items())
+                ])
+                fig_b = px.bar(
+                    freq_df_b, x='numero', y='pct',
+                    color='pct',
+                    color_continuous_scale='RdYlGn',
+                    title="Frequenza numeri nelle candidate Piano B"
+                )
+                fig_b.update_layout(
+                    template="plotly_dark", height=280,
+                    margin=dict(l=20,r=20,t=40,b=20),
+                    xaxis=dict(dtick=5)
+                )
+                st.plotly_chart(fig_b, use_container_width=True)
+
+                # Numeri unici
+                st.write("**Numeri unici nelle candidate:**")
+                for i in range(0, len(numeri_unici_b), 10):
+                    st.write(" ".join(
+                        f"**{n}**"
+                        for n in numeri_unici_b[i:i+10]
+                    ))
+
+                st.divider()
+
+                # Prime 50 candidate
+                st.subheader(
+                    f"Prime 50 candidate Piano B "
+                    f"({len(candidate_b):,} totali)"
+                )
+                righe_b = []
+                for i, s in enumerate(candidate_b[:50]):
+                    righe_b.append({
+                        '#': i+1,
+                        'N1': s[0], 'N2': s[1], 'N3': s[2],
+                        'N4': s[3], 'N5': s[4], 'N6': s[5],
+                        'Somma': sum(s),
+                    })
+                st.dataframe(
+                    pd.DataFrame(righe_b),
+                    hide_index=True,
+                    use_container_width=True
+                )
+                st.download_button(
+                    "⬇️ Scarica candidate Piano B (CSV)",
+                    pd.DataFrame([
+                        {'N1':s[0],'N2':s[1],'N3':s[2],
+                         'N4':s[3],'N5':s[4],'N6':s[5],
+                         'Somma':sum(s)}
+                        for s in candidate_b
+                    ]).to_csv(index=False),
+                    "candidate_pianob.csv",
+                    "text/csv",
+                    key="dl_pianob"
+                )
+
+                st.divider()
+
+                # ── SISTEMA RIDOTTO PIANO B ───────────────
+                st.markdown("### 🔧 Sistema Ridotto Piano B")
+                with st.form("form_ridotto_b"):
+                    garanzia_b = st.radio(
+                        "Garanzia:", options=[4, 5],
+                        index=1, horizontal=True,
+                        key="gar_b"
+                    )
+                    n_cand_b = st.number_input(
+                        "Candidate da usare per il ridotto:",
+                        min_value=10,
+                        max_value=len(candidate_b),
+                        value=min(300, len(candidate_b)),
+                        step=10,
+                        key="n_cand_b"
+                    )
+                    submitted_ridotto_b = st.form_submit_button(
+                        "🎯 Genera Sistema Ridotto Piano B",
+                        type="primary"
+                    )
+
+                if submitted_ridotto_b:
+                    cand_list_b = [
+                        tuple(s) for s in candidate_b[:int(n_cand_b)]
+                    ]
+                    with st.spinner(
+                        f"Covering design su "
+                        f"{len(cand_list_b)} candidate..."
+                    ):
+                        sistema_b, efficienza_b, pool_b = \
+                            genera_ridotto_da_candidate(
+                                cand_list_b, garanzia_b
+                            )
+
+                    st.success(
+                        f"Sistema ridotto: "
+                        f"**{len(sistema_b)}** sestine | "
+                        f"Partenza: **{len(cand_list_b)}** | "
+                        f"Riduzione: **{efficienza_b}%** | "
+                        f"Garanzia: **{garanzia_b}**"
+                    )
+
+                    if sistema_b:
+                        righe_rid_b = []
+                        for i, s in enumerate(sistema_b):
+                            righe_rid_b.append({
+                                '#': i+1,
+                                'N1':s[0],'N2':s[1],'N3':s[2],
+                                'N4':s[3],'N5':s[4],'N6':s[5],
+                                'Somma': sum(s),
+                                'Range': s[-1]-s[0],
+                            })
+                        df_rid_b = pd.DataFrame(righe_rid_b)
+                        st.dataframe(
+                            df_rid_b,
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                        st.download_button(
+                            "⬇️ Scarica sistema ridotto (CSV)",
+                            df_rid_b.to_csv(index=False),
+                            f"ridotto_pianob_g{garanzia_b}.csv",
+                            "text/csv",
+                            key="dl_rid_b"
+                        )
+
+                        # Grafico copertura
+                        tutti_rb  = [x for s in sistema_b
+                                     for x in s]
+                        freq_rb   = Counter(tutti_rb)
+                        freq_df_rb = pd.DataFrame([
+                            {'numero': k, 'presenze': v,
+                             'pct': round(
+                                 v*100/len(sistema_b), 1)}
+                            for k, v in sorted(freq_rb.items())
+                        ])
+                        fig_rb = px.bar(
+                            freq_df_rb,
+                            x='numero', y='pct',
+                            color='pct',
+                            color_continuous_scale='RdYlGn',
+                            title="Copertura numeri nel ridotto"
+                        )
+                        fig_rb.update_layout(
+                            template="plotly_dark", height=250,
+                            margin=dict(l=20,r=20,t=40,b=20)
+                        )
+                        st.plotly_chart(
+                            fig_rb, use_container_width=True
+                        )
