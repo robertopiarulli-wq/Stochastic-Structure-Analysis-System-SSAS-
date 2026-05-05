@@ -1327,6 +1327,13 @@ with tab7:
             "Margine ±", min_value=10, max_value=60,
             value=30, step=5, key="margine_b"
         )
+        st.caption(
+            f"**Margine ±{margine_b}**: quanto può distaccarsi "
+            f"la prossima somma dalla media delle ultime 10 "
+            f"({media_s10:.1f}). "
+            f"Stretto (±10) = poche candidate concentrate. "
+            f"Ampio (±60) = più candidate, meno filtrate."
+        )
         fmin_b = int(media_s10 - margine_b)
         fmax_b = int(media_s10 + margine_b)
 
@@ -1388,6 +1395,19 @@ with tab7:
                 if n_pari != n_pari_b:
                     continue
                 candidate_b.append(list(sestina))
+
+            # Salva in session_state per il form del ridotto
+            st.session_state['candidate_b']  = candidate_b
+            st.session_state['fmin_b']       = fmin_b
+            st.session_state['fmax_b']       = fmax_b
+            st.session_state['n_pari_b']     = n_pari_b
+
+        # Mostra risultati se disponibili in session_state
+        if 'candidate_b' in st.session_state:
+            candidate_b = st.session_state['candidate_b']
+            fmin_b_s    = st.session_state.get('fmin_b', fmin_b)
+            fmax_b_s    = st.session_state.get('fmax_b', fmax_b)
+            n_pari_b_s  = st.session_state.get('n_pari_b', n_pari_b)
 
             if not candidate_b:
                 st.warning(
