@@ -232,7 +232,12 @@ def genera_sistema_ridotto(numeri, garanzia=5):
     ) if tutte_sestine else 0
     return selezionate, efficienza
 
-def mostra_sistema(sistema, garanzia, key_prefix):
+def mostra_sistema(sistema, garanzia, key_prefix,
+                   intestazione: dict = None):
+    """
+    Mostra tabella sistema ridotto + download CSV + stampa.
+    intestazione: dict con dettagli analisi per la stampa
+    """
     righe = []
     for i, s in enumerate(sistema):
         righe.append({
@@ -243,13 +248,71 @@ def mostra_sistema(sistema, garanzia, key_prefix):
         })
     df_r = pd.DataFrame(righe)
     st.dataframe(df_r, hide_index=True, use_container_width=True)
-    st.download_button(
-        "⬇️ Scarica sistema (CSV)",
-        df_r.to_csv(index=False),
-        f"ridotto_{key_prefix}_g{garanzia}.csv",
-        "text/csv",
-        key=f"dl_{key_prefix}"
-    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            "⬇️ Scarica sistema (CSV)",
+            df_r.to_csv(index=False),
+            f"ridotto_{key_prefix}_g{garanzia}.csv",
+            "text/csv",
+            key=f"dl_{key_prefix}"
+        )
+    with c2:
+        # Costruisci HTML per stampa
+        oggi  = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+        hdr   = intestazione or {}
+        righe_html = "".join([
+            f"<tr><td>{r['#']}</td>"
+            f"<td>{r['N1']}</td><td>{r['N2']}</td>"
+            f"<td>{r['N3']}</td><td>{r['N4']}</td>"
+            f"<td>{r['N5']}</td><td>{r['N6']}</td>"
+            f"<td>{r['Somma']}</td><td>{r['Range']}</td></tr>"
+            for _, r in df_r.iterrows()
+        ])
+        html_print = f"""
+<html><head><meta charset='utf-8'>
+<style>
+  body{{font-family:Arial,sans-serif;margin:20px;font-size:12px}}
+  h2{{color:#333;margin-bottom:4px}}
+  .info{{color:#555;margin-bottom:12px;font-size:11px}}
+  table{{border-collapse:collapse;width:100%}}
+  th{{background:#2c3e50;color:white;padding:6px;text-align:center}}
+  td{{border:1px solid #ddd;padding:5px;text-align:center}}
+  tr:nth-child(even){{background:#f9f9f9}}
+  .footer{{margin-top:16px;font-size:10px;color:#888}}
+</style></head><body>
+<h2>🎯 SSAS — Sistema Ridotto Superenalotto</h2>
+<div class='info'>
+  <b>Data:</b> {oggi} &nbsp;|&nbsp;
+  <b>Garanzia:</b> {garanzia} &nbsp;|&nbsp;
+  <b>Sestine:</b> {len(sistema)} &nbsp;|&nbsp;
+  <b>Partenza:</b> {hdr.get('n_candidate','—')} candidate<br>
+  <b>Fascia Wyckoff:</b> {hdr.get('fascia_wyckoff','—')} &nbsp;|&nbsp;
+  <b>Fascia LSTM:</b> {hdr.get('fascia_lstm','—')} &nbsp;|&nbsp;
+  <b>Fascia merged:</b> {hdr.get('fascia_merged','—')}<br>
+  <b>Concordanza LSTM:</b> {hdr.get('concordanza','—')} &nbsp;|&nbsp;
+  <b>Vincolo parità:</b> {hdr.get('parita','—')} &nbsp;|&nbsp;
+  <b>Pool numeri:</b> {hdr.get('pool','—')}
+</div>
+<table>
+  <tr><th>#</th><th>N1</th><th>N2</th><th>N3</th>
+      <th>N4</th><th>N5</th><th>N6</th>
+      <th>Somma</th><th>Range</th></tr>
+  {righe_html}
+</table>
+<div class='footer'>SSAS — Stochastic Structure Analysis System |
+Wyckoff + Parisi | senal8.streamlit.app</div>
+<script>window.print();</script>
+</body></html>"""
+
+        b64 = __import__('base64').b64encode(
+            html_print.encode()).decode()
+        href = (f'<a href="data:text/html;base64,{b64}" '
+                f'download="ridotto_{key_prefix}_g{garanzia}.html" '
+                f'target="_blank">'
+                f'🖨️ Stampa / Salva HTML</a>')
+        st.markdown(href, unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────
 st.title("🎯 SSAS — Stochastic Structure Analysis System")
@@ -432,6 +495,32 @@ with tab3:
                       f"{int(w['fascia_min'])}-{int(w['fascia_max'])}")
             st.info(f"Zona: **{w['zona_tipo']}** | "
                     f"Cicli: {w['cicli_analizzati']}")
+
+            # Info LSTM se disponibile
+            lstm_pred = w.get('fascia_lstm_pred')
+            lstm_low  = w.get('fascia_lstm_low')
+            lstm_high = w.get('fascia_lstm_high')
+            lstm_conc = w.get('lstm_concordanza', '')
+            lstm_dist = w.get('lstm_distanza', '')
+            if lstm_pred is not None and str(lstm_pred) != 'nan':
+                try:
+                    emoji_conc = {
+                        'ALTA': '🟢', 'MEDIA': '🟡', 'BASSA': '🔴'
+                    }.get(str(lstm_conc), '⚪')
+                    st.info(
+                        f"🤖 LSTM — Somma predetta: "
+                        f"**{float(lstm_pred):.1f}** "
+                        f"[{float(lstm_low):.0f}-"
+                        f"{float(lstm_high):.0f}] | "
+                        f"Concordanza Wyckoff: "
+                        f"{emoji_conc} **{lstm_conc}** "
+                        f"(distanza {float(lstm_dist):.0f} pt) | "
+                        f"Fascia merged: "
+                        f"**{int(w['fascia_min'])}-"
+                        f"{int(w['fascia_max'])}**"
+                    )
+                except Exception:
+                    pass
 
             # Vincolo parità se disponibile
             n_p    = w.get('vincolo_n_pari')
@@ -1069,8 +1158,22 @@ with tab5:
                             f"{len(sistema)} sestine "
                             f"nel target {fmin}-{fmax}"
                         )
+                        # Raccoglie dati per intestazione stampa
+                        _w_print = carica_wyckoff_stato()
+                        _wp = _w_print.iloc[0] \
+                            if not _w_print.empty else {}
+                        intest_auto = {
+                            'n_candidate':    n_use,
+                            'fascia_wyckoff': f"{_wp.get('fascia_min','?')}-{_wp.get('fascia_max','?')}",
+                            'fascia_lstm':    f"{_wp.get('fascia_lstm_low','?'):.0f}-{_wp.get('fascia_lstm_high','?'):.0f}" if _wp.get('fascia_lstm_low') else '—',
+                            'fascia_merged':  f"{fmin}-{fmax}",
+                            'concordanza':    _wp.get('lstm_concordanza','—'),
+                            'parita':         _wp.get('vincolo_logica','—'),
+                            'pool':           str(sorted(pool_out)),
+                        }
                         mostra_sistema(
-                            sistema, garanzia_auto, "auto")
+                            sistema, garanzia_auto, "auto",
+                            intestazione=intest_auto)
 
                         tutti_a  = [x for s in sistema for x in s]
                         freq_a   = Counter(tutti_a)
