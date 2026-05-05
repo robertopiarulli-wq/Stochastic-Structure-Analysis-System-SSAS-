@@ -24,6 +24,7 @@ jobs:
 
       - name: Installa dipendenze
         run: pip install -r requirements.txt
+        run: pip install supabase pandas numpy scipy tensorflow
 
       - name: Esegui analisi
         env:
