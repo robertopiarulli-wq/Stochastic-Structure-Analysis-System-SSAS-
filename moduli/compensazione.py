@@ -263,26 +263,61 @@ def esegui_compensazione(df_raw, wyckoff_id, stato,
     pool_bassa, pool_media, pool_alta, universo = \
         seleziona_universo_tre_fasce(df_freq, n_per_fascia=12)
 
-    # Filtra per ritardo: top 20 più attesi dall'universo
-    # Carica ritardi dalla mappa_occupazione
+    # Filtra per ritardo con PRIORITÀ PER FASCIA FREQUENZA
+    # Logica: prima BASSA freq (compensazione primaria),
+    #         poi MEDIA freq, infine ALTA freq (solo se serve)
+    # Dentro ogni gruppo, ordina per ritardo decrescente
     res_mappa = client.table("mappa_occupazione")\
         .select("numero,ritardo_attuale")\
         .execute()
     df_ritardi = pd.DataFrame(res_mappa.data)
+    rit_map    = dict(zip(
+        df_ritardi['numero'], df_ritardi['ritardo_attuale']
+    ))
 
-    # Prendi ritardi solo per i numeri dell'universo
-    df_rit_univ = df_ritardi[
-        df_ritardi['numero'].isin(universo)
-    ].sort_values('ritardo_attuale', ascending=False)
+    TARGET = 20
 
-    # Top 20 per ritardo
-    universo_20 = df_rit_univ.head(20)['numero'].tolist()
-    universo_20 = sorted(universo_20)
+    # Gruppo BASSA: tutti i 12, ordinati per ritardo
+    bassa_sorted = sorted(
+        pool_bassa,
+        key=lambda n: rit_map.get(n, 0), reverse=True
+    )
+    # Gruppo MEDIA: ordinati per ritardo
+    media_sorted = sorted(
+        pool_media,
+        key=lambda n: rit_map.get(n, 0), reverse=True
+    )
+    # Gruppo ALTA: ordinati per ritardo
+    alta_sorted  = sorted(
+        pool_alta,
+        key=lambda n: rit_map.get(n, 0), reverse=True
+    )
 
-    print(f"  [Compensazione] Filtro ritardo → top 20 più attesi:")
-    for _, r in df_rit_univ.head(20).iterrows():
-        print(f"    N.{int(r['numero']):2d} → "
-              f"ritardo={int(r['ritardo_attuale'])}")
+    universo_20 = []
+    # 1° priorità: tutti dalla BASSA
+    universo_20.extend(bassa_sorted)
+    # 2° priorità: dalla MEDIA finché non arrivi a 20
+    if len(universo_20) < TARGET:
+        da_media = TARGET - len(universo_20)
+        universo_20.extend(media_sorted[:da_media])
+    # 3° priorità: dall'ALTA solo se ancora serve
+    if len(universo_20) < TARGET:
+        da_alta = TARGET - len(universo_20)
+        universo_20.extend(alta_sorted[:da_alta])
+
+    universo_20 = sorted(universo_20[:TARGET])
+
+    print(f"  [Compensazione] Pool con priorità frequenza:")
+    print(f"    BASSA freq ({len(pool_bassa)} num) → "
+          f"presi tutti: {sorted(bassa_sorted)}")
+    n_da_media = sum(1 for n in universo_20 if n in pool_media)
+    n_da_alta  = sum(1 for n in universo_20 if n in pool_alta)
+    print(f"    MEDIA freq ({len(pool_media)} num) → "
+          f"presi {n_da_media}: "
+          f"{sorted(n for n in universo_20 if n in pool_media)}")
+    print(f"    ALTA  freq ({len(pool_alta)} num) → "
+          f"presi {n_da_alta}: "
+          f"{sorted(n for n in universo_20 if n in pool_alta)}")
     print(f"  [Compensazione] Universo finale "
           f"(20 numeri): {universo_20}")
 
