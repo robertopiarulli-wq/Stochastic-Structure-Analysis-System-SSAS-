@@ -5,7 +5,6 @@ on:
   workflow_dispatch:
   
   # Schedulato: ogni lunedì e giovedì alle 10:00
-  # (dopo le estrazioni del martedì e giovedì)
   schedule:
     - cron: '0 10 * * 1,4'
 
@@ -23,8 +22,9 @@ jobs:
           python-version: '3.11'
 
       - name: Installa dipendenze
-        run: pip install -r requirements.txt
-        run: pip install supabase pandas numpy scipy tensorflow
+        run: |
+          pip install -r requirements.txt
+          pip install tensorflow
 
       - name: Esegui analisi
         env:
