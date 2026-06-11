@@ -1399,7 +1399,7 @@ with tab7:
         # ── CONDIZIONE 1: Top 20 ritardatari da tutti 90 ─────
         st.markdown("### Condizione 1 — Top 20 Ritardatari")
         df_rit_b = df_mappa_b.sort_values(
-            'ritardo_attuale', ascending=False).head(20)
+            'ritardo_attuale', ascending=False).head(36)
         top20_b  = sorted(df_rit_b['numero'].tolist())
 
         c1, c2 = st.columns([2, 1])
